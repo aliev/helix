@@ -17,7 +17,7 @@ use gix::status::{
 };
 use gix::{Commit, ObjectId, Repository, ThreadSafeRepository};
 
-use crate::FileChange;
+use crate::{FileChange, GitPermalinkInfo};
 
 #[cfg(test)]
 mod test;
@@ -81,6 +81,33 @@ pub fn get_current_head_name(file: &Path) -> Result<Arc<ArcSwap<Box<str>>>> {
 
 pub fn for_each_changed_file(cwd: &Path, f: impl Fn(Result<FileChange>) -> bool) -> Result<()> {
     status(&open_repo(cwd)?.to_thread_local(), f)
+}
+
+pub fn get_permalink_info(file: &Path) -> Result<GitPermalinkInfo> {
+    debug_assert!(!file.exists() || file.is_file());
+    debug_assert!(file.is_absolute());
+    let file = gix::path::realpath(file).context("resolve symlinks")?;
+
+    let repo_dir = get_repo_dir(&file)?;
+    let repo = open_repo(repo_dir)
+        .context("failed to open git repo")?
+        .to_thread_local();
+    let repo_root = repo
+        .workdir()
+        .context("working tree not found")?
+        .to_path_buf();
+    let head = repo.head_commit()?.id.to_hex().to_string();
+    let remote_url = repo
+        .config_snapshot()
+        .string("remote.origin.url")
+        .map(|url| url.to_string())
+        .context("remote.origin.url is not configured")?;
+
+    Ok(GitPermalinkInfo {
+        repo_root,
+        head,
+        remote_url,
+    })
 }
 
 fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {

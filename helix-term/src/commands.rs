@@ -526,6 +526,7 @@ impl MappableCommand {
         git_hunk_preview, "Show sticky git hunk preview under cursor",
         git_reset_hunk, "Reset git hunk under cursor",
         git_yank_hunk, "Copy git hunk under cursor to clipboard",
+        copy_git_file_location, "Copy git permalink with selected line range to clipboard",
         copy_file_location, "Copy file path and selected line range to clipboard",
         toggle_comments, "Comment/uncomment selections",
         toggle_line_comments, "Line comment/uncomment selections",
@@ -5889,6 +5890,10 @@ fn git_reset_hunk(cx: &mut Context) {
 
 fn git_yank_hunk(cx: &mut Context) {
     execute_typed_command(cx, "git-yank-hunk");
+}
+
+fn copy_git_file_location(cx: &mut Context) {
+    execute_typed_command(cx, "copy-git-file-location");
 }
 
 fn copy_file_location(cx: &mut Context) {

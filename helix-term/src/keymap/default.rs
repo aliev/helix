@@ -237,6 +237,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "g" => { "Git"
                 "g" => changed_file_picker,
                 "c" => git_conflict_preview,
+                "l" => copy_git_file_location,
                 "n" => git_conflict_next,
                 "N" => git_conflict_prev,
                 "o" => git_conflict_ours,

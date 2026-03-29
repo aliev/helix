@@ -20,6 +20,13 @@ mod status;
 
 pub use status::FileChange;
 
+#[derive(Debug, Clone)]
+pub struct GitPermalinkInfo {
+    pub repo_root: PathBuf,
+    pub head: String,
+    pub remote_url: String,
+}
+
 /// Contains all active diff providers. Diff providers are compiled in via features. Currently
 /// only `git` is supported.
 #[derive(Clone)]
@@ -52,6 +59,19 @@ impl DiffProviderRegistry {
                 Err(err) => {
                     log::debug!("{err:#?}");
                     log::debug!("failed to obtain current head name for {}", file.display());
+                    None
+                }
+            })
+    }
+
+    pub fn get_permalink_info(&self, file: &Path) -> Option<GitPermalinkInfo> {
+        self.providers
+            .iter()
+            .find_map(|provider| match provider.get_permalink_info(file) {
+                Ok(res) => Some(res),
+                Err(err) => {
+                    log::debug!("{err:#?}");
+                    log::debug!("failed to obtain permalink info for {}", file.display());
                     None
                 }
             })
@@ -114,6 +134,14 @@ impl DiffProvider {
         match self {
             #[cfg(feature = "git")]
             Self::Git => git::get_current_head_name(file),
+            Self::None => bail!("No diff support compiled in"),
+        }
+    }
+
+    fn get_permalink_info(&self, file: &Path) -> Result<GitPermalinkInfo> {
+        match self {
+            #[cfg(feature = "git")]
+            Self::Git => git::get_permalink_info(file),
             Self::None => bail!("No diff support compiled in"),
         }
     }

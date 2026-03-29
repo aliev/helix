@@ -21,6 +21,7 @@ use helix_view::theme::Modifier;
 use serde_json::Value;
 use tui::text::{Span, Spans, Text as TuiText};
 use ui::completers::{self, Completer};
+use url::Url;
 
 pub(crate) const GIT_HUNK_PREVIEW_ID: &str = "git-hunk-preview";
 pub(crate) const GIT_CONFLICT_PREVIEW_ID: &str = "git-conflict-preview";
@@ -3797,6 +3798,71 @@ fn copy_file_location(
     Ok(())
 }
 
+fn remote_to_web_url(remote: &str) -> anyhow::Result<String> {
+    let remote = remote.trim();
+
+    if let Some((host, path)) = remote
+        .split_once("://")
+        .and_then(|_| {
+            let url = Url::parse(remote).ok()?;
+            let host = url.host_str()?.to_owned();
+            Some((host, url.path().trim_start_matches('/').to_owned()))
+        })
+        .or_else(|| {
+            let (user_host, path) = remote.split_once(':')?;
+            let host = user_host.split('@').next_back()?.to_owned();
+            Some((host, path.to_owned()))
+        })
+    {
+        let path = path.trim_end_matches(".git").trim_matches('/');
+        return Ok(format!("https://{host}/{path}"));
+    }
+
+    bail!("Unsupported git remote URL: {remote}");
+}
+
+fn copy_git_file_location(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    let path = doc
+        .path()
+        .ok_or_else(|| anyhow!("Current buffer has no file path"))?;
+    let permalink = cx
+        .editor
+        .diff_providers
+        .get_permalink_info(path)
+        .ok_or_else(|| anyhow!("Git permalink is not available for the current file"))?;
+    let relative_path = path
+        .strip_prefix(&permalink.repo_root)
+        .context("Current file is not inside the repository root")?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let text = doc.text().slice(..);
+    let (start_line, end_line) = doc.selection(view.id).primary().line_range(text);
+    let base_url = remote_to_web_url(&permalink.remote_url)?;
+    let anchor = if start_line == end_line {
+        format!("#L{}", start_line + 1)
+    } else {
+        format!("#L{}-L{}", start_line + 1, end_line + 1)
+    };
+    let location = format!(
+        "{}/blob/{}/{}{}",
+        base_url, permalink.head, relative_path, anchor
+    );
+
+    cx.editor.registers.write('+', vec![location])?;
+    cx.editor
+        .set_status("Copied git permalink to system clipboard");
+    Ok(())
+}
+
 fn read(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4967,6 +5033,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Copy the diff hunk under the cursor to the system clipboard.",
         fun: yank_diff_hunk,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "copy-git-file-location",
+        aliases: &[],
+        doc: "Copy a git permalink with commit hash and selected line range to the system clipboard.",
+        fun: copy_git_file_location,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
