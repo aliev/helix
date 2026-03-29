@@ -1637,7 +1637,11 @@ impl Editor {
         doc.detect_indent_and_line_ending();
         self.refresh_language_servers(doc_id);
         let doc = doc_mut!(self, &doc_id);
-        let diagnostics = Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, doc);
+        let diagnostics = if doc.has_conflict_markers() {
+            doc.conflict_marker_diagnostics()
+        } else {
+            Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, doc).collect()
+        };
         doc.replace_diagnostics(diagnostics, &[], None);
         doc.reset_all_inlay_hints();
     }
@@ -1947,8 +1951,11 @@ impl Editor {
                 self.syn_loader.clone(),
             )?;
 
-            let diagnostics =
-                Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, &doc);
+            let diagnostics = if doc.has_conflict_markers() {
+                doc.conflict_marker_diagnostics()
+            } else {
+                Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, &doc).collect()
+            };
             doc.replace_diagnostics(diagnostics, &[], None);
 
             if let Some(diff_base) = self.diff_providers.get_diff_base(&path) {

@@ -436,11 +436,16 @@ impl Application {
                 // Re-detect .editorconfig
                 document.detect_editor_config();
                 document.detect_language(&lang_loader);
-                let diagnostics = Editor::doc_diagnostics(
-                    &self.editor.language_servers,
-                    &self.editor.diagnostics,
-                    document,
-                );
+                let diagnostics = if document.has_conflict_markers() {
+                    document.conflict_marker_diagnostics()
+                } else {
+                    Editor::doc_diagnostics(
+                        &self.editor.language_servers,
+                        &self.editor.diagnostics,
+                        document,
+                    )
+                    .collect()
+                };
                 document.replace_diagnostics(diagnostics, &[], None);
             }
 

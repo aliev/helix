@@ -22,6 +22,21 @@ use helix_view::{DocumentId, Editor};
 use crate::events::OnModeSwitch;
 use crate::job;
 
+fn update_conflict_diagnostics(editor: &mut Editor, doc_id: DocumentId) -> bool {
+    let Some(doc) = editor.document_mut(doc_id) else {
+        return false;
+    };
+
+    let diagnostics = doc.conflict_marker_diagnostics();
+    if diagnostics.is_empty() {
+        return false;
+    }
+
+    doc.replace_diagnostics(diagnostics, &[], None);
+    doc.previous_diagnostic_id = None;
+    true
+}
+
 pub(super) fn register_hooks(handlers: &Handlers) {
     register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
         if event.editor.mode != Mode::Insert {
@@ -46,6 +61,12 @@ pub(super) fn register_hooks(handlers: &Handlers) {
             .has_language_server_with_feature(LanguageServerFeature::PullDiagnostics)
             && !event.ghost_transaction
         {
+            if event.doc.has_conflict_markers() {
+                event.doc
+                    .replace_diagnostics(event.doc.conflict_marker_diagnostics(), &[], None);
+                event.doc.previous_diagnostic_id = None;
+                return Ok(());
+            }
             // Cancel the ongoing request, if present.
             event.doc.pull_diagnostic_controller.cancel();
             let document_id = event.doc.id();
@@ -233,6 +254,7 @@ fn request_document_diagnostics_for_language_severs(
                         retry_language_servers.insert(server_id);
                     }
                 }
+                Some(Some((Err(_), DiagnosticProvider::Conflict, _))) => {}
                 Some(None) => break,
                 // The request was cancelled.
                 None => return,
@@ -255,6 +277,14 @@ fn request_document_diagnostics_for_language_severs(
 }
 
 pub fn request_document_diagnostics(editor: &mut Editor, doc_id: DocumentId) {
+    if update_conflict_diagnostics(editor, doc_id) {
+        helix_event::dispatch(DiagnosticsDidChange {
+            editor,
+            doc: doc_id,
+        });
+        return;
+    }
+
     let Some(doc) = editor.document(doc_id) else {
         return;
     };
@@ -274,6 +304,14 @@ fn handle_pull_diagnostics_response(
     uri: Uri,
     document_id: DocumentId,
 ) {
+    if update_conflict_diagnostics(editor, document_id) {
+        helix_event::dispatch(DiagnosticsDidChange {
+            editor,
+            doc: document_id,
+        });
+        return;
+    }
+
     match result {
         lsp::DocumentDiagnosticReportResult::Report(report) => {
             let result_id = match report {

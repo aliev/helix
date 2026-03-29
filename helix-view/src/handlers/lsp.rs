@@ -359,6 +359,13 @@ impl Editor {
         diagnostics.sort_by_key(|(d, provider)| (d.severity, d.range.start, provider.clone()));
 
         if let Some(doc) = doc {
+            if doc.has_conflict_markers() {
+                doc.replace_diagnostics(doc.conflict_marker_diagnostics(), &[], None);
+
+                let doc = doc.id();
+                helix_event::dispatch(DiagnosticsDidChange { editor: self, doc });
+                return;
+            }
             let diagnostic_of_language_server_and_not_in_unchanged_sources =
                 |diagnostic: &lsp::Diagnostic, d_provider: &DiagnosticProvider| {
                     d_provider == provider

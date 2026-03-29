@@ -43,7 +43,8 @@ use helix_core::{
     indent::{auto_detect_indent_style, IndentStyle},
     line_ending::auto_detect_line_ending,
     syntax::{self, config::LanguageConfiguration},
-    ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
+    ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, RopeSlice, Selection, Syntax,
+    Transaction,
 };
 
 use crate::{
@@ -64,6 +65,13 @@ const PERSISTENT_UNDO_DIR: &str = "undo";
 pub const DEFAULT_LANGUAGE_NAME: &str = "text";
 
 pub const SCRATCH_BUFFER_NAME: &str = "[scratch]";
+const CONFLICT_START_MARKER: &str = "<<<<<<<";
+const CONFLICT_SEPARATOR_MARKER: &str = "=======";
+const CONFLICT_END_MARKER: &str = ">>>>>>>";
+
+fn line_starts_with(text: RopeSlice, line_idx: usize, prefix: &str) -> bool {
+    text.line(line_idx).to_string().starts_with(prefix)
+}
 
 fn persistent_undo_path(path: &Path, configured_dir: Option<&Path>) -> PathBuf {
     let mut hasher = DefaultHasher::new();
@@ -2320,6 +2328,50 @@ impl Document {
     #[inline]
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    pub fn conflict_marker_diagnostics(&self) -> Vec<Diagnostic> {
+        let text = self.text().slice(..);
+        let mut diagnostics = Vec::new();
+
+        for line_idx in 0..text.len_lines() {
+            let message = if line_starts_with(text, line_idx, CONFLICT_START_MARKER) {
+                Some("Merge conflict start")
+            } else if line_starts_with(text, line_idx, CONFLICT_SEPARATOR_MARKER) {
+                Some("Merge conflict separator")
+            } else if line_starts_with(text, line_idx, CONFLICT_END_MARKER) {
+                Some("Merge conflict end")
+            } else {
+                None
+            };
+
+            let Some(message) = message else {
+                continue;
+            };
+
+            let start = text.line_to_char(line_idx);
+            let end = text.line_to_char((line_idx + 1).min(text.len_lines()));
+            diagnostics.push(Diagnostic {
+                range: helix_core::diagnostic::Range { start, end },
+                ends_at_word: false,
+                starts_at_word: false,
+                zero_width: start == end,
+                line: line_idx,
+                message: message.to_owned(),
+                severity: Some(helix_core::diagnostic::Severity::Error),
+                code: None,
+                provider: DiagnosticProvider::Conflict,
+                tags: Vec::new(),
+                source: Some("git-conflict".into()),
+                data: None,
+            });
+        }
+
+        diagnostics
+    }
+
+    pub fn has_conflict_markers(&self) -> bool {
+        !self.conflict_marker_diagnostics().is_empty()
     }
 
     pub fn replace_diagnostics(
