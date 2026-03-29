@@ -3,6 +3,7 @@ use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::application::Application;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
+use helix_term::ipc::RemoteCommand;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -71,6 +72,12 @@ FLAGS:
     -v                             Increase logging verbosity each use for up to 3 times
     --log <file>                   Specify a file to use for logging
                                    (default file: {})
+    --listen [path.sock]           Listen for local remote-control commands on a unix socket
+                                   (default: /tmp/<project-dir>.sock)
+    --remote [path.sock] <command> Send a remote-control command to a running Helix instance
+                                   (default: /tmp/<project-dir>.sock)
+    --mcp [path.sock]              Run an MCP stdio bridge connected to a Helix IPC socket
+                                   (default: /tmp/<project-dir>.sock)
     -V, --version                  Print version information
     --vsplit                       Split all given files vertically into different windows
     --hsplit                       Split all given files horizontally into different windows
@@ -90,6 +97,27 @@ FLAGS:
     if args.display_version {
         println!("helix {}", VERSION_AND_GIT_HASH);
         std::process::exit(0);
+    }
+
+    if let Some(socket_path) = args.ipc_remote.as_ref() {
+        let command = args
+            .ipc_remote_command
+            .as_deref()
+            .context("missing remote command")?;
+        let response = helix_term::ipc::send_command(socket_path, RemoteCommand::parse(command)?)
+            .await
+            .context("failed to send remote command")?;
+        if response.ok {
+            println!("{}", response.message);
+            return Ok(0);
+        }
+
+        eprintln!("{}", response.message);
+        return Ok(1);
+    }
+
+    if let Some(socket_path) = args.mcp_socket.clone() {
+        return helix_term::mcp::run_stdio(socket_path).await;
     }
 
     if args.health {

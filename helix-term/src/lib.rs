@@ -8,8 +8,10 @@ pub mod compositor;
 pub mod config;
 pub mod events;
 pub mod health;
+pub mod ipc;
 pub mod job;
 pub mod keymap;
+pub mod mcp;
 pub mod ui;
 
 #[cfg(not(windows))]

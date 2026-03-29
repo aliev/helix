@@ -1757,11 +1757,15 @@ fn reload_all(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
         return Ok(());
     }
 
-    let scrolloff = cx.editor.config().scrolloff;
-    let view_id = view!(cx.editor).id;
+    reload_all_documents(cx.editor)?;
+    Ok(())
+}
 
-    let docs_view_ids: Vec<(DocumentId, Vec<ViewId>)> = cx
-        .editor
+pub(crate) fn reload_all_documents(editor: &mut Editor) -> anyhow::Result<usize> {
+    let scrolloff = editor.config().scrolloff;
+    let view_id = view!(editor).id;
+
+    let docs_view_ids: Vec<(DocumentId, Vec<ViewId>)> = editor
         .documents_mut()
         .map(|doc| {
             let mut view_ids: Vec<_> = doc.selections().keys().cloned().collect();
@@ -1775,36 +1779,45 @@ fn reload_all(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
         })
         .collect();
 
+    let mut first_error = None;
+
     for (doc_id, view_ids) in docs_view_ids {
-        let doc = doc_mut!(cx.editor, &doc_id);
+        let doc = doc_mut!(editor, &doc_id);
 
         // Every doc is guaranteed to have at least 1 view at this point.
-        let view = view_mut!(cx.editor, view_ids[0]);
+        let view = view_mut!(editor, view_ids[0]);
 
         // Ensure that the view is synced with the document's history.
         view.sync_changes(doc);
 
-        if let Err(error) = doc.reload(view, &cx.editor.diff_providers) {
-            cx.editor.set_error(format!("{}", error));
+        if let Err(error) = doc.reload(view, &editor.diff_providers) {
+            if first_error.is_none() {
+                first_error = Some(anyhow::anyhow!("{error}"));
+            }
+            editor.set_error(format!("{}", error));
             continue;
         }
 
         if let Some(path) = doc.path() {
-            cx.editor
+            editor
                 .language_servers
                 .file_event_handler
                 .file_changed(path.clone());
         }
 
         for view_id in view_ids {
-            let view = view_mut!(cx.editor, view_id);
+            let view = view_mut!(editor, view_id);
             if view.doc.eq(&doc_id) {
                 view.ensure_cursor_in_view(doc, scrolloff);
             }
         }
     }
 
-    Ok(())
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+
+    Ok(editor.documents().count())
 }
 
 /// Update the [`Document`] if it has been modified.

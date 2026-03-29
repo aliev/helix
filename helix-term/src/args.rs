@@ -19,6 +19,13 @@ pub struct Args {
     pub config_file: Option<PathBuf>,
     pub files: IndexMap<PathBuf, Vec<Position>>,
     pub working_directory: Option<PathBuf>,
+    pub ipc_listen_enabled: bool,
+    pub ipc_listen: Option<PathBuf>,
+    pub ipc_remote_enabled: bool,
+    pub ipc_remote: Option<PathBuf>,
+    pub ipc_remote_command: Option<String>,
+    pub mcp_enabled: bool,
+    pub mcp_socket: Option<PathBuf>,
 }
 
 impl Args {
@@ -74,6 +81,32 @@ impl Args {
                     Some(path) => args.log_file = Some(path.into()),
                     None => anyhow::bail!("--log must specify a path to write"),
                 },
+                "--listen" => {
+                    args.ipc_listen_enabled = true;
+                    if let Some(path) = argv.next_if(|opt| looks_like_socket_path(opt)) {
+                        args.ipc_listen = Some(path.into());
+                    }
+                }
+                "--remote" => {
+                    args.ipc_remote_enabled = true;
+                    if let Some(path) = argv.next_if(|opt| looks_like_socket_path(opt)) {
+                        args.ipc_remote = Some(path.into());
+                    }
+                    let command = match argv.next_if(|opt| !opt.starts_with('-')) {
+                        Some(command) => command,
+                        None => anyhow::bail!("--remote must be followed by a command"),
+                    };
+                    if !RemoteCommandName::contains(&command) {
+                        anyhow::bail!("unsupported remote command {}", command);
+                    }
+                    args.ipc_remote_command = Some(command);
+                }
+                "--mcp" => {
+                    args.mcp_enabled = true;
+                    if let Some(path) = argv.next_if(|opt| looks_like_socket_path(opt)) {
+                        args.mcp_socket = Some(path.into());
+                    }
+                }
                 "-w" | "--working-dir" => match argv.next().as_deref() {
                     Some(path) => {
                         args.working_directory = if Path::new(path).is_dir() {
@@ -128,7 +161,81 @@ impl Args {
             }
         }
 
+        if args.ipc_listen_enabled && args.ipc_remote_enabled {
+            anyhow::bail!("--listen and --remote cannot be used together");
+        }
+
+        if args.mcp_enabled && args.ipc_listen_enabled {
+            anyhow::bail!("--mcp and --listen cannot be used together");
+        }
+
+        let default_socket = default_ipc_socket_path(args.working_directory.as_deref());
+        if args.ipc_listen_enabled && args.ipc_listen.is_none() {
+            args.ipc_listen = Some(default_socket.clone());
+        }
+        if args.ipc_remote_enabled && args.ipc_remote.is_none() {
+            args.ipc_remote = Some(default_socket.clone());
+        }
+        if args.mcp_enabled && args.mcp_socket.is_none() {
+            args.mcp_socket = Some(default_socket);
+        }
+
         Ok(args)
+    }
+}
+
+fn looks_like_socket_path(value: &str) -> bool {
+    value.ends_with(".sock")
+}
+
+fn default_ipc_socket_path(working_directory: Option<&Path>) -> PathBuf {
+    let base = working_directory
+        .map(Path::to_path_buf)
+        .unwrap_or_else(helix_stdx::env::current_working_dir);
+    let project_name = base
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(sanitize_socket_name)
+        .unwrap_or_else(|| "hx".to_string());
+
+    PathBuf::from("/tmp").join(format!("{project_name}.sock"))
+}
+
+fn sanitize_socket_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    if sanitized.is_empty() {
+        "hx".to_string()
+    } else {
+        sanitized
+    }
+}
+
+enum RemoteCommandName {}
+
+impl RemoteCommandName {
+    fn contains(command: &str) -> bool {
+        match command {
+            "reload-all"
+            | "get-current-document"
+            | "get-open-documents"
+            | "get-selections"
+            | "open-file"
+            | "goto-location"
+            | "select-lines"
+            | "get-diagnostics" => true,
+            _ => false,
+        }
     }
 }
 
