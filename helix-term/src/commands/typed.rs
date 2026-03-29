@@ -2855,6 +2855,158 @@ fn reset_diff_change(
     Ok(())
 }
 
+fn current_diff_hunk(
+    editor: &Editor,
+) -> anyhow::Result<(u32, u32, Hunk, Rope, Rope, ViewId)> {
+    let (view, doc) = current_ref!(editor);
+    let Some(handle) = doc.diff_handle() else {
+        bail!("Diff is not available in the current buffer")
+    };
+
+    let doc_text = doc.text().slice(..);
+    let cursor_line = doc.selection(view.id).primary().cursor_line(doc_text) as u32;
+    let diff = handle.load();
+    let Some(hunk_idx) = diff.hunk_at(cursor_line, true) else {
+        bail!("There is no diff change under the cursor");
+    };
+
+    Ok((
+        hunk_idx,
+        diff.len(),
+        diff.nth_hunk(hunk_idx),
+        diff.diff_base().clone(),
+        diff.doc().clone(),
+        view.id,
+    ))
+}
+
+fn hunk_line_text(text: RopeSlice, line_idx: u32) -> String {
+    text.line(line_idx as usize)
+        .to_string()
+        .trim_end_matches(['\n', '\r'])
+        .to_owned()
+}
+
+fn render_diff_hunk_markdown(
+    hunk_idx: u32,
+    total_hunks: u32,
+    hunk: Hunk,
+    diff_base: RopeSlice,
+    doc_text: RopeSlice,
+) -> String {
+    const CONTEXT_LINES: u32 = 2;
+
+    let removed_count = hunk.before.len();
+    let added_count = hunk.after.len();
+    let before_start = hunk.before.start + 1;
+    let after_start = hunk.after.start + 1;
+    let context_before_start = hunk.after.start.saturating_sub(CONTEXT_LINES);
+    let context_after_end = (hunk.after.end + CONTEXT_LINES).min(doc_text.len_lines() as u32);
+
+    let mut rendered = String::new();
+    let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
+    let _ = writeln!(
+        rendered,
+        "removes {} line{} and adds {} line{}\n",
+        removed_count,
+        if removed_count == 1 { "" } else { "s" },
+        added_count,
+        if added_count == 1 { "" } else { "s" }
+    );
+    let _ = writeln!(
+        rendered,
+        "```diff\n@@ -{},{} +{},{} @@",
+        before_start, removed_count, after_start, added_count
+    );
+
+    for line_idx in context_before_start..hunk.after.start {
+        let _ = writeln!(rendered, "  {}", hunk_line_text(doc_text, line_idx));
+    }
+    for line_idx in hunk.before.clone() {
+        let _ = writeln!(rendered, "- {}", hunk_line_text(diff_base, line_idx));
+    }
+    for line_idx in hunk.after.clone() {
+        let _ = writeln!(rendered, "+ {}", hunk_line_text(doc_text, line_idx));
+    }
+    for line_idx in hunk.after.end..context_after_end {
+        let _ = writeln!(rendered, "  {}", hunk_line_text(doc_text, line_idx));
+    }
+    rendered.push_str("```");
+    rendered
+}
+
+fn preview_diff_hunk(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (hunk_idx, total_hunks, hunk, diff_base, doc_text, _view_id) = current_diff_hunk(cx.editor)?;
+    let preview = render_diff_hunk_markdown(
+        hunk_idx,
+        total_hunks,
+        hunk,
+        diff_base.slice(..),
+        doc_text.slice(..),
+    );
+    let position = cx.editor.cursor().0;
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let contents = ui::Markdown::new(preview, editor.syn_loader.clone());
+                let popup = Popup::new("git-hunk-preview", contents)
+                    .position(position)
+                    .auto_close(true);
+                compositor.replace_or_push("git-hunk-preview", popup);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+
+    Ok(())
+}
+
+fn reset_diff_hunk(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let scrolloff = cx.editor.config().scrolloff;
+    let (_hunk_idx, _total_hunks, hunk, diff_base, doc_text, view_id) = current_diff_hunk(cx.editor)?;
+    let (view, doc) = current!(cx.editor);
+    debug_assert_eq!(view.id, view_id);
+
+    let diff_base = diff_base.slice(..);
+    let doc_text = doc_text.slice(..);
+    let start = diff_base.line_to_char(hunk.before.start as usize);
+    let end = diff_base.line_to_char(hunk.before.end as usize);
+    let text: Tendril = diff_base.slice(start..end).chunks().collect();
+    let transaction = Transaction::change(
+        doc.text(),
+        [(
+            doc_text.line_to_char(hunk.after.start as usize),
+            doc_text.line_to_char(hunk.after.end as usize),
+            (!text.is_empty()).then_some(text),
+        )]
+        .into_iter(),
+    );
+
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    view.ensure_cursor_in_view(doc, scrolloff);
+    cx.editor.set_status("Reset current diff hunk");
+    Ok(())
+}
+
 fn clear_register(
     cx: &mut compositor::Context,
     args: Args,
@@ -4099,6 +4251,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["diffget", "diffg"],
         doc: "Reset the diff change at the cursor position.",
         fun: reset_diff_change,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-hunk-preview",
+        aliases: &[],
+        doc: "Show the diff hunk under the cursor in a popup.",
+        fun: preview_diff_hunk,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-reset-hunk",
+        aliases: &[],
+        doc: "Reset the diff hunk under the cursor.",
+        fun: reset_diff_hunk,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
