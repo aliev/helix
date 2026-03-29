@@ -3764,6 +3764,39 @@ fn yank_diagnostic(
     Ok(())
 }
 
+fn copy_file_location(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    let path = doc
+        .relative_path()
+        .or_else(|| doc.path().map(|path| path.as_path()))
+        .ok_or_else(|| anyhow!("Current buffer has no file path"))?;
+    let text = doc.text().slice(..);
+    let (start_line, end_line) = doc.selection(view.id).primary().line_range(text);
+    let location = if start_line == end_line {
+        format!("{}:{}", path.to_string_lossy(), start_line + 1)
+    } else {
+        format!(
+            "{}:{}-{}",
+            path.to_string_lossy(),
+            start_line + 1,
+            end_line + 1
+        )
+    };
+
+    cx.editor.registers.write('+', vec![location])?;
+    cx.editor
+        .set_status("Copied file location to system clipboard");
+    Ok(())
+}
+
 fn read(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4934,6 +4967,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Copy the diff hunk under the cursor to the system clipboard.",
         fun: yank_diff_hunk,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "copy-file-location",
+        aliases: &[],
+        doc: "Copy the current file path and selected line range to the system clipboard.",
+        fun: copy_file_location,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
