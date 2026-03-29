@@ -3169,6 +3169,51 @@ fn hunk_line_text(text: RopeSlice, line_idx: u32) -> String {
         .to_owned()
 }
 
+pub(crate) struct GitHunkPopup {
+    markdown: ui::Markdown,
+}
+
+impl GitHunkPopup {
+    fn new(contents: String, editor: &Editor) -> Self {
+        Self {
+            markdown: ui::Markdown::new(contents, editor.syn_loader.clone()),
+        }
+    }
+}
+
+impl Component for GitHunkPopup {
+    fn handle_event(
+        &mut self,
+        event: &compositor::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
+        match event {
+            compositor::Event::Key(key) => match key.code {
+                KeyCode::Char('r') => compositor::EventResult::Consumed(Some(Box::new(
+                    |compositor, cx| {
+                        compositor.remove(GIT_HUNK_PREVIEW_ID);
+                        if let Err(err) =
+                            reset_diff_hunk(cx, Args::default(), PromptEvent::Validate)
+                        {
+                            cx.editor.set_error(err.to_string());
+                        }
+                    },
+                ))),
+                _ => self.markdown.handle_event(event, cx),
+            },
+            _ => self.markdown.handle_event(event, cx),
+        }
+    }
+
+    fn render(&mut self, area: Rect, frame: &mut tui::buffer::Buffer, cx: &mut compositor::Context) {
+        self.markdown.render(area, frame, cx);
+    }
+
+    fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        self.markdown.required_size(viewport)
+    }
+}
+
 fn render_diff_hunk_markdown(
     hunk_idx: u32,
     total_hunks: u32,
@@ -3187,6 +3232,7 @@ fn render_diff_hunk_markdown(
 
     let mut rendered = String::new();
     let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
+    let _ = writeln!(rendered, "`r` reset hunk, `Esc` close\n");
     let _ = writeln!(
         rendered,
         "removes {} line{} and adds {} line{}\n",
@@ -3230,7 +3276,7 @@ fn git_hunk_preview_markdown(editor: &Editor) -> anyhow::Result<String> {
 
 pub(crate) fn refresh_git_hunk_preview(editor: &mut Editor, compositor: &mut Compositor) {
     if let Ok(preview) = git_hunk_preview_markdown(editor) {
-        let contents = ui::Markdown::new(preview, editor.syn_loader.clone());
+        let contents = GitHunkPopup::new(preview, editor);
         let popup = Popup::new(GIT_HUNK_PREVIEW_ID, contents)
             .position(editor.cursor().0)
             .position_bias(Open::Above)

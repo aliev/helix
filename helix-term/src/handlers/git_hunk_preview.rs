@@ -3,7 +3,7 @@ use helix_view::document::Mode;
 
 use crate::events::{OnModeSwitch, PostCommand};
 use crate::handlers::Handlers;
-use crate::ui::{self, Popup};
+use crate::ui::Popup;
 use crate::{commands::typed, keymap::MappableCommand};
 
 fn sticky_git_hunk_preview_post_command(
@@ -21,7 +21,7 @@ fn sticky_git_hunk_preview_post_command(
 
     cx.callback.push(Box::new(|compositor, ctx| {
         if compositor
-            .find_id::<Popup<ui::Markdown>>(typed::GIT_HUNK_PREVIEW_ID)
+            .find_id::<Popup<typed::GitHunkPopup>>(typed::GIT_HUNK_PREVIEW_ID)
             .is_some()
         {
             typed::refresh_git_hunk_preview(ctx.editor, compositor);
