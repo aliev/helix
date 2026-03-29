@@ -3,6 +3,7 @@ use helix_loader::VERSION_AND_GIT_HASH;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use tokio::time::{sleep, Duration};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::remote::RemoteCommand;
@@ -219,8 +220,23 @@ async fn handle_message(
                 }
             };
 
-            let response = crate::remote::send_command_with_args(socket_path, remote, params.arguments)
-                .await?;
+            let response = match send_remote_command(socket_path, remote, params.arguments).await {
+                Ok(response) => response,
+                Err(err) => {
+                    return Ok(Some(jsonrpc_result(
+                        id,
+                        json!({
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": format!("tool error: {err}"),
+                                }
+                            ],
+                            "isError": true,
+                        }),
+                    )));
+                }
+            };
             let summary = if response.ok {
                 response.message.clone()
             } else {
@@ -246,6 +262,27 @@ async fn handle_message(
         }
         _ => Ok(id.map(|id| jsonrpc_error(id, -32601, format!("method not found: {method}")))),
     }
+}
+
+async fn send_remote_command(
+    socket_path: &PathBuf,
+    remote: RemoteCommand,
+    arguments: Option<Value>,
+) -> Result<crate::remote::IpcResponse> {
+    let mut last_err = None;
+
+    for delay_ms in [0_u64, 150, 400] {
+        if delay_ms > 0 {
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        match crate::remote::send_command_with_args(socket_path, remote, arguments.clone()).await {
+            Ok(response) => return Ok(response),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("failed to contact Helix session")))
 }
 
 fn jsonrpc_result(id: Value, result: Value) -> Value {
