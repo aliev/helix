@@ -24,9 +24,12 @@ use serde::de::{self, Deserialize, Deserializer};
 use serde::Serialize;
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::future::Future;
+use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -56,10 +59,40 @@ const BUF_SIZE: usize = 8192;
 
 const DEFAULT_INDENT: IndentStyle = IndentStyle::Tabs;
 const DEFAULT_TAB_WIDTH: usize = 4;
+const PERSISTENT_UNDO_DIR: &str = "undo";
 
 pub const DEFAULT_LANGUAGE_NAME: &str = "text";
 
 pub const SCRATCH_BUFFER_NAME: &str = "[scratch]";
+
+fn persistent_undo_path(path: &Path, configured_dir: Option<&Path>) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            name.chars()
+                .map(|ch| match ch {
+                    'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => ch,
+                    _ => '_',
+                })
+                .collect::<String>()
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "document".to_string());
+
+    persistent_undo_dir(configured_dir)
+        .join(format!("{file_name}-{hash:016x}.json"))
+}
+
+fn persistent_undo_dir(configured_dir: Option<&Path>) -> PathBuf {
+    configured_dir
+        .map(helix_stdx::path::canonicalize)
+        .unwrap_or_else(|| helix_loader::data_dir().join(PERSISTENT_UNDO_DIR))
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -817,6 +850,7 @@ impl Document {
 
         doc.editor_config = editor_config;
         doc.detect_indent_and_line_ending();
+        doc.load_persistent_undo();
 
         Ok(doc)
     }
@@ -1013,6 +1047,15 @@ impl Document {
         let current_rev = self.get_current_revision();
         let doc_id = self.id();
         let atomic_save = self.config.load().atomic_save;
+        let undo_state = if self.config.load().persistent_undo {
+            let configured_undo_dir = self.config.load().persistent_undo_dir.clone();
+            let history = self.history.take();
+            let serialized = history.serialize(&text);
+            self.history.set(history);
+            Some((persistent_undo_path(&path, configured_undo_dir.as_deref()), serialized))
+        } else {
+            None
+        };
 
         let encoding_with_bom_info = (self.encoding, self.has_bom);
         let last_saved_time = self.last_saved_time;
@@ -1149,6 +1192,31 @@ impl Document {
 
             write_result?;
 
+            if let Some((undo_path, serialized)) = undo_state {
+                match serialized {
+                    Ok(serialized) => {
+                        if let Some(parent) = undo_path.parent() {
+                            let _ = fs::create_dir_all(parent).await.map_err(|err| {
+                                log::warn!(
+                                    "failed to create persistent undo directory '{}': {err}",
+                                    parent.display()
+                                )
+                            });
+                        }
+                        let _ = fs::write(&undo_path, serialized).await.map_err(|err| {
+                            log::warn!(
+                                "failed to write persistent undo history '{}': {err}",
+                                undo_path.display()
+                            )
+                        });
+                    }
+                    Err(err) => log::warn!(
+                        "failed to serialize persistent undo history for '{}': {err}",
+                        path.display()
+                    ),
+                }
+            }
+
             let event = DocumentSavedEvent {
                 revision: current_rev,
                 save_time,
@@ -1215,6 +1283,45 @@ impl Document {
         if self.config.load().editor_config {
             if let Some(path) = self.path.as_ref() {
                 self.editor_config = EditorConfig::find(path);
+            }
+        }
+    }
+
+    fn load_persistent_undo(&mut self) {
+        if !self.config.load().persistent_undo {
+            return;
+        }
+
+        let Some(path) = self.path() else {
+            return;
+        };
+
+        let configured_undo_dir = self.config.load().persistent_undo_dir.clone();
+        let undo_path = persistent_undo_path(path, configured_undo_dir.as_deref());
+        let serialized = match fs::read_to_string(&undo_path) {
+            Ok(serialized) => serialized,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return,
+            Err(err) => {
+                log::warn!(
+                    "failed to read persistent undo history for '{}': {err}",
+                    path.display()
+                );
+                return;
+            }
+        };
+
+        match History::deserialize(&serialized, self.text()) {
+            Ok(Some(history)) => {
+                let current_revision = history.current_revision();
+                self.history.set(history);
+                self.last_saved_revision = current_revision;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!(
+                    "failed to restore persistent undo history for '{}': {err}",
+                    path.display()
+                );
             }
         }
     }
@@ -2609,6 +2716,45 @@ mod test {
             .to_string(),
             helix_core::NATIVE_LINE_ENDING.as_str()
         );
+    }
+
+    #[test]
+    fn persistent_undo_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("persistent-undo.txt");
+        std::fs::write(&path, "hello\n").unwrap();
+        std::env::set_var("HOME", dir.path());
+        std::env::set_var("XDG_DATA_HOME", dir.path());
+
+        let test_config = Config {
+            persistent_undo: true,
+            ..Config::default()
+        };
+        let gutters = test_config.gutters.clone();
+        let config = Arc::new(ArcSwap::new(Arc::new(test_config)));
+        let loader = Arc::new(ArcSwap::from_pointee(syntax::Loader::default()));
+
+        let mut doc = Document::open(&path, None, false, config.clone(), loader.clone()).unwrap();
+        let mut view = View::new(doc.id(), gutters.clone());
+        doc.ensure_view_init(view.id);
+        let transaction =
+            Transaction::change(doc.text(), vec![(5, 5, Some(" world".into()))].into_iter());
+        doc.apply(&transaction, view.id);
+        doc.append_changes_to_history(&mut view);
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(doc.save::<PathBuf>(None, false).unwrap())
+            .unwrap();
+        assert!(persistent_undo_path(&path, None).exists());
+
+        let mut reopened = Document::open(&path, None, false, config, loader).unwrap();
+        let mut reopened_view = View::new(reopened.id(), gutters);
+        reopened.ensure_view_init(reopened_view.id);
+
+        assert_eq!(reopened.text().to_string(), "hello world\n");
+        assert!(reopened.get_current_revision() > 0);
+        assert!(reopened.undo(&mut reopened_view));
+        assert_eq!(reopened.text().to_string(), "hello\n");
     }
 
     macro_rules! decode {

@@ -427,6 +427,10 @@ pub struct Config {
     /// Whether to read settings from [EditorConfig](https://editorconfig.org) files. Defaults to
     /// `true`.
     pub editor_config: bool,
+    /// Whether to persist undo history for files across editor restarts. Defaults to `false`.
+    pub persistent_undo: bool,
+    /// Directory for persistent undo files. Defaults to Helix's data dir plus `undo`.
+    pub persistent_undo_dir: Option<PathBuf>,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -1153,6 +1157,8 @@ impl Default for Config {
             end_of_line_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
             clipboard_provider: ClipboardProvider::default(),
             editor_config: true,
+            persistent_undo: false,
+            persistent_undo_dir: None,
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),

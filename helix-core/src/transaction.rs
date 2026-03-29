@@ -103,6 +103,10 @@ impl ChangeSet {
         &self.changes
     }
 
+    pub fn len_chars(&self) -> usize {
+        self.len
+    }
+
     // Changeset builder operations: delete/insert/retain
     pub(crate) fn delete(&mut self, n: usize) {
         use Operation::*;

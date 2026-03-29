@@ -1,7 +1,10 @@
 use crate::{Assoc, ChangeSet, Range, Rope, Selection, Transaction};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::num::NonZeroUsize;
+use std::{collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -300,6 +303,184 @@ impl History {
             TimePeriod(d) => self.jump_duration_forward(d),
         }
     }
+
+    pub fn serialize(&self, current_doc: &Rope) -> serde_json::Result<String> {
+        let root_timestamp = self.revisions[0].timestamp;
+        let persistent = PersistentHistory {
+            current: self.current,
+            current_doc_hash: hash_rope(current_doc),
+            revisions: self
+                .revisions
+                .iter()
+                .map(|revision| PersistentRevision {
+                    parent: revision.parent,
+                    last_child: revision.last_child.map(NonZeroUsize::get),
+                    transaction: PersistentTransaction::from_transaction(&revision.transaction),
+                    inversion: PersistentTransaction::from_transaction(&revision.inversion),
+                    timestamp_millis: revision
+                        .timestamp
+                        .duration_since(root_timestamp)
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                })
+                .collect(),
+        };
+
+        serde_json::to_string(&persistent)
+    }
+
+    pub fn deserialize(serialized: &str, current_doc: &Rope) -> serde_json::Result<Option<Self>> {
+        let persistent: PersistentHistory = serde_json::from_str(serialized)?;
+        if persistent.current_doc_hash != hash_rope(current_doc) || persistent.revisions.is_empty() {
+            return Ok(None);
+        }
+
+        let now = Instant::now();
+        let revisions = persistent
+            .revisions
+            .into_iter()
+            .map(|revision| {
+                Ok(Revision {
+                    parent: revision.parent,
+                    last_child: revision.last_child.and_then(NonZeroUsize::new),
+                    transaction: revision.transaction.into_transaction()?,
+                    inversion: revision.inversion.into_transaction()?,
+                    timestamp: now
+                        .checked_add(Duration::from_millis(revision.timestamp_millis))
+                        .unwrap_or(now),
+                })
+            })
+            .collect::<serde_json::Result<Vec<_>>>()?;
+
+        if persistent.current >= revisions.len() {
+            return Ok(None);
+        }
+
+        Ok(Some(Self {
+            revisions,
+            current: persistent.current,
+        }))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistentHistory {
+    current: usize,
+    current_doc_hash: u64,
+    revisions: Vec<PersistentRevision>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistentRevision {
+    parent: usize,
+    last_child: Option<usize>,
+    transaction: PersistentTransaction,
+    inversion: PersistentTransaction,
+    timestamp_millis: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistentTransaction {
+    original_len: usize,
+    changes: Vec<PersistentChange>,
+    selection: Option<PersistentSelection>,
+}
+
+impl PersistentTransaction {
+    fn from_transaction(transaction: &Transaction) -> Self {
+        Self {
+            original_len: transaction.changes().len_chars(),
+            changes: transaction
+                .changes_iter()
+                .map(|(from, to, fragment)| PersistentChange {
+                    from,
+                    to,
+                    insert: fragment.map(Into::into),
+                })
+                .collect(),
+            selection: transaction.selection().map(PersistentSelection::from_selection),
+        }
+    }
+
+    fn into_transaction(self) -> serde_json::Result<Transaction> {
+        let doc = Rope::from(" ".repeat(self.original_len));
+        let transaction = Transaction::change(
+            &doc,
+            self.changes
+                .into_iter()
+                .map(|change| (change.from, change.to, change.insert.map(Into::into))),
+        );
+
+        Ok(match self.selection {
+            Some(selection) => transaction.with_selection(selection.into_selection()?),
+            None => transaction,
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistentChange {
+    from: usize,
+    to: usize,
+    insert: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistentSelection {
+    primary_index: usize,
+    ranges: Vec<PersistentRange>,
+}
+
+impl PersistentSelection {
+    fn from_selection(selection: &Selection) -> Self {
+        Self {
+            primary_index: selection.primary_index(),
+            ranges: selection
+                .ranges()
+                .iter()
+                .map(|range| PersistentRange {
+                    anchor: range.anchor,
+                    head: range.head,
+                    old_visual_position: range.old_visual_position,
+                })
+                .collect(),
+        }
+    }
+
+    fn into_selection(self) -> serde_json::Result<Selection> {
+        if self.ranges.is_empty() || self.primary_index >= self.ranges.len() {
+            return Err(serde::de::Error::custom("invalid persistent selection"));
+        }
+
+        Ok(Selection::new(
+            self.ranges
+                .into_iter()
+                .map(|range| Range {
+                    anchor: range.anchor,
+                    head: range.head,
+                    old_visual_position: range.old_visual_position,
+                })
+                .collect::<SmallVec<[Range; 1]>>(),
+            self.primary_index,
+        ))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistentRange {
+    anchor: usize,
+    head: usize,
+    old_visual_position: Option<(u32, u32)>,
+}
+
+fn hash_rope(rope: &Rope) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    rope.len_chars().hash(&mut hasher);
+    for chunk in rope.chunks() {
+        hasher.write(chunk.as_bytes());
+    }
+    hasher.finish()
 }
 
 /// Whether to undo by a number of edits or a duration of time.
@@ -629,5 +810,37 @@ mod test {
             "1 minute 18446744073709551615 seconds".parse::<UndoKind>(),
             Err("duration too large".to_string())
         );
+    }
+
+    #[test]
+    fn test_history_serialization_roundtrip() {
+        let mut history = History::default();
+        let mut state = State {
+            doc: Rope::from("hello\n"),
+            selection: Selection::point(0),
+        };
+
+        let txn1 = Transaction::change(&state.doc, vec![(5, 5, Some(" world".into()))].into_iter())
+            .with_selection(Selection::point(11));
+        history.commit_revision(&txn1, &state);
+        txn1.apply(&mut state.doc);
+
+        let txn2 = Transaction::change(&state.doc, vec![(0, 5, Some("hola".into()))].into_iter())
+            .with_selection(Selection::point(4));
+        history.commit_revision(&txn2, &state);
+        txn2.apply(&mut state.doc);
+
+        let serialized = history.serialize(&state.doc).unwrap();
+        let mut restored = History::deserialize(&serialized, &state.doc)
+            .unwrap()
+            .expect("history should deserialize");
+
+        let undo = restored.undo().unwrap().clone();
+        undo.apply(&mut state.doc);
+        assert_eq!(state.doc, Rope::from("hello world\n"));
+
+        let redo = restored.redo().unwrap().clone();
+        redo.apply(&mut state.doc);
+        assert_eq!(state.doc, Rope::from("hola world\n"));
     }
 }
