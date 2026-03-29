@@ -179,12 +179,12 @@ async fn handle_message(
                         ),
                         tool(
                             "split_open",
-                            "Open a file in a new split relative to the current one. Use direction left, right, up, or down to control where the new split appears.",
+                            "Open a file in a new split relative to the current one. Use direction left, right, up, or down to control where the new split appears. The aliases horizontal and vertical are also accepted.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
-                                    "direction": { "type": "string", "enum": ["left", "right", "up", "down"] },
+                                    "direction": { "type": "string", "enum": ["left", "right", "up", "down", "horizontal", "vertical"] },
                                     "line": { "type": "integer", "minimum": 1 },
                                     "column": { "type": "integer", "minimum": 1 }
                                 },

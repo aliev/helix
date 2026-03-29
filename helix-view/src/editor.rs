@@ -75,7 +75,7 @@ fn format_mcp_client_name(name: &str) -> String {
     let simplified = trimmed
         .trim_start_matches("claude-")
         .trim_start_matches("codex-")
-        .replace('-'," ");
+        .replace('-', " ");
     let title = simplified
         .split_whitespace()
         .next()
@@ -88,8 +88,20 @@ fn format_mcp_client_name(name: &str) -> String {
     if out.is_empty() {
         "MCP".to_string()
     } else {
-        out
+        let mut chars = out.chars();
+        let mut titled = String::new();
+        if let Some(first) = chars.next() {
+            titled.extend(first.to_uppercase());
+            titled.push_str(chars.as_str());
+        }
+        titled
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct McpStatus {
+    pub label: &'static str,
+    pub detail: String,
 }
 
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -1472,7 +1484,7 @@ impl Editor {
         self.needs_redraw = true;
     }
 
-    pub fn mcp_status(&self) -> Option<String> {
+    pub fn mcp_status(&self) -> Option<McpStatus> {
         const MCP_PRESENCE_TTL: Duration = Duration::from_secs(30);
 
         let now = Instant::now();
@@ -1484,8 +1496,14 @@ impl Editor {
 
         match active.as_slice() {
             [] => None,
-            [client] => Some(format!(" MCP:{} ", format_mcp_client_name(&client.name))),
-            many => Some(format!(" MCP:{} ", many.len())),
+            [client] => Some(McpStatus {
+                label: " MCP ",
+                detail: format!(" {} ", format_mcp_client_name(&client.name)),
+            }),
+            many => Some(McpStatus {
+                label: " MCP ",
+                detail: format!(" {} clients ", many.len()),
+            }),
         }
     }
 

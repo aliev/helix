@@ -195,15 +195,16 @@ fn render_mcp<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let Some(content) = context.editor.mcp_status() else {
+    let Some(status) = context.editor.mcp_status() else {
         return;
     };
-    let style = context
+    let chip_style = context
         .editor
         .theme
         .try_get("ui.statusline.remote")
         .unwrap_or_else(|| context.editor.theme.get("ui.statusline"));
-    write(context, Span::styled(content, style));
+    write(context, Span::styled(status.label, chip_style));
+    write(context, Span::raw(status.detail));
 }
 
 // TODO think about handling multiple language servers

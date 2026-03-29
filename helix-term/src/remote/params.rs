@@ -1,8 +1,7 @@
 use serde::Deserialize;
 use helix_view::tree;
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy)]
 pub enum SplitDirection {
     Left,
     Right,
@@ -17,6 +16,27 @@ impl SplitDirection {
             Self::Right => tree::Direction::Right,
             Self::Up => tree::Direction::Up,
             Self::Down => tree::Direction::Down,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SplitDirection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "up" => Ok(Self::Up),
+            "down" => Ok(Self::Down),
+            "horizontal" => Ok(Self::Down),
+            "vertical" => Ok(Self::Right),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["left", "right", "up", "down", "horizontal", "vertical"],
+            )),
         }
     }
 }
