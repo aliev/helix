@@ -21,7 +21,8 @@ pub fn default_socket_path(working_directory: Option<&Path>) -> PathBuf {
 pub fn is_supported_remote_command(command: &str) -> bool {
     matches!(
         command,
-        "reload-all"
+        "get-active-context"
+            | "reload-all"
             | "get-current-document"
             | "get-open-documents"
             | "get-selections"

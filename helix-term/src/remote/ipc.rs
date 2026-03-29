@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteCommand {
     ReloadAll,
+    GetActiveContext,
     GetCurrentDocument,
     GetOpenDocuments,
     GetSelections,
@@ -23,6 +24,7 @@ impl RemoteCommand {
     pub fn parse(command: &str) -> Result<Self> {
         match command {
             "reload-all" => Ok(Self::ReloadAll),
+            "get-active-context" => Ok(Self::GetActiveContext),
             "get-current-document" => Ok(Self::GetCurrentDocument),
             "get-open-documents" => Ok(Self::GetOpenDocuments),
             "get-selections" => Ok(Self::GetSelections),
@@ -38,6 +40,7 @@ impl RemoteCommand {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ReloadAll => "reload-all",
+            Self::GetActiveContext => "get-active-context",
             Self::GetCurrentDocument => "get-current-document",
             Self::GetOpenDocuments => "get-open-documents",
             Self::GetSelections => "get-selections",

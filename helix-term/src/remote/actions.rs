@@ -11,9 +11,9 @@ use std::{
 use crate::{
     commands::typed,
     remote::{
-        CurrentDocumentSnapshot, DiagnosticSnapshot, GotoLocationArgs, IpcResponse,
-        McpPresenceArgs, OpenDocumentSnapshot, OpenFileArgs, RemoteCommand, SelectLinesArgs,
-        SelectionSnapshot,
+        CurrentDocumentSnapshot, DiagnosticSnapshot, GetCurrentDocumentArgs, GetDiagnosticsArgs,
+        GetSelectionsArgs, GotoLocationArgs, IpcResponse, McpPresenceArgs, OpenDocumentSnapshot,
+        OpenFileArgs, RemoteCommand, SelectLinesArgs, SelectionSnapshot,
     },
 };
 
@@ -31,24 +31,34 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
                 IpcResponse::err(message)
             }
         },
-        RemoteCommand::GetCurrentDocument => match serde_json::to_value(current_document_snapshot(editor))
-        {
-            Ok(data) => IpcResponse::ok_with_data("current document snapshot", data),
+        RemoteCommand::GetActiveContext => match serde_json::to_value(active_context_snapshot(editor)) {
+            Ok(data) => IpcResponse::ok_with_data("active editor context", data),
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
+        RemoteCommand::GetCurrentDocument => match parse_args::<GetCurrentDocumentArgs>(arguments) {
+            Ok(args) => match current_document_snapshot(editor, args.path.as_deref()) {
+                Ok(snapshot) => match serde_json::to_value(snapshot) {
+                    Ok(data) => IpcResponse::ok_with_data("current document snapshot", data),
+                    Err(err) => IpcResponse::err(err.to_string()),
+                },
+                Err(err) => IpcResponse::err(err.to_string()),
+            },
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::GetOpenDocuments => match serde_json::to_value(open_documents_snapshot(editor)) {
             Ok(data) => IpcResponse::ok_with_data("open document snapshots", data),
             Err(err) => IpcResponse::err(err.to_string()),
         },
-        RemoteCommand::GetSelections => {
-            let (view, doc) = current!(editor);
-            let selections =
-                SelectionSnapshot::from_selection(doc.selection(view.id), doc.text().slice(..));
-            match serde_json::to_value(selections) {
-                Ok(data) => IpcResponse::ok_with_data("selection snapshots", data),
+        RemoteCommand::GetSelections => match parse_args::<GetSelectionsArgs>(arguments) {
+            Ok(args) => match selections_snapshot(editor, args.path.as_deref()) {
+                Ok(snapshot) => match serde_json::to_value(snapshot) {
+                    Ok(data) => IpcResponse::ok_with_data("selection snapshots", data),
+                    Err(err) => IpcResponse::err(err.to_string()),
+                },
                 Err(err) => IpcResponse::err(err.to_string()),
-            }
-        }
+            },
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
         RemoteCommand::OpenFile => match parse_args::<OpenFileArgs>(arguments) {
             Ok(args) => match open_file(editor, args) {
                 Ok(message) => IpcResponse::ok(message),
@@ -70,9 +80,14 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
             },
             Err(err) => IpcResponse::err(err.to_string()),
         },
-        RemoteCommand::GetDiagnostics => match serde_json::to_value(current_diagnostics_snapshot(editor))
-        {
-            Ok(data) => IpcResponse::ok_with_data("current diagnostics snapshot", data),
+        RemoteCommand::GetDiagnostics => match parse_args::<GetDiagnosticsArgs>(arguments) {
+            Ok(args) => match diagnostics_snapshot(editor, args.path.as_deref()) {
+                Ok(snapshot) => match serde_json::to_value(snapshot) {
+                    Ok(data) => IpcResponse::ok_with_data("current diagnostics snapshot", data),
+                    Err(err) => IpcResponse::err(err.to_string()),
+                },
+                Err(err) => IpcResponse::err(err.to_string()),
+            },
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::UpdateMcpPresence => match parse_args::<McpPresenceArgs>(arguments) {
@@ -109,8 +124,11 @@ pub fn notify_attention(command: RemoteCommand, message: &str) {
     let _ = std::io::stdout().lock().flush();
 }
 
-pub fn current_document_snapshot(editor: &Editor) -> CurrentDocumentSnapshot {
-    let (view, doc) = current_ref!(editor);
+pub fn current_document_snapshot(
+    editor: &Editor,
+    path: Option<&str>,
+) -> anyhow::Result<CurrentDocumentSnapshot> {
+    let (view, doc) = find_target_document(editor, path)?;
     let text = doc.text().slice(..);
     let primary_selection_text = doc
         .selection(view.id)
@@ -118,7 +136,7 @@ pub fn current_document_snapshot(editor: &Editor) -> CurrentDocumentSnapshot {
         .fragment(text)
         .to_string();
 
-    CurrentDocumentSnapshot {
+    Ok(CurrentDocumentSnapshot {
         path: doc.path().map(|path| path.display().to_string()),
         relative_path: doc
             .path()
@@ -129,7 +147,33 @@ pub fn current_document_snapshot(editor: &Editor) -> CurrentDocumentSnapshot {
         selections: SelectionSnapshot::from_selection(doc.selection(view.id), text),
         primary_selection_text,
         text: text.to_string(),
-    }
+    })
+}
+
+pub fn active_context_snapshot(editor: &Editor) -> serde_json::Value {
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+    let selections = SelectionSnapshot::from_selection(doc.selection(view.id), text);
+    let diagnostics: Vec<_> = doc
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| DiagnosticSnapshot {
+            path: doc.path().map(|path| path.display().to_string()),
+            line: text.char_to_line(diagnostic.range.start) + 1,
+            end_line: text.char_to_line(diagnostic.range.end) + 1,
+            message: diagnostic.message.clone(),
+            severity: diagnostic
+                .severity
+                .map(|severity| format!("{severity:?}").to_lowercase()),
+            source: diagnostic.source.clone(),
+        })
+        .collect();
+
+    serde_json::json!({
+        "document": current_document_snapshot(editor, None).expect("current document is always available"),
+        "selections": selections,
+        "diagnostics": diagnostics,
+    })
 }
 
 pub fn open_documents_snapshot(editor: &Editor) -> Vec<OpenDocumentSnapshot> {
@@ -149,11 +193,15 @@ pub fn open_documents_snapshot(editor: &Editor) -> Vec<OpenDocumentSnapshot> {
         .collect()
 }
 
-pub fn current_diagnostics_snapshot(editor: &Editor) -> Vec<DiagnosticSnapshot> {
-    let (_view, doc) = current_ref!(editor);
+pub fn diagnostics_snapshot(
+    editor: &Editor,
+    path: Option<&str>,
+) -> anyhow::Result<Vec<DiagnosticSnapshot>> {
+    let (_view, doc) = find_target_document(editor, path)?;
     let text = doc.text().slice(..);
 
-    doc.diagnostics()
+    Ok(doc
+        .diagnostics()
         .iter()
         .map(|diagnostic| DiagnosticSnapshot {
             path: doc.path().map(|path| path.display().to_string()),
@@ -165,7 +213,18 @@ pub fn current_diagnostics_snapshot(editor: &Editor) -> Vec<DiagnosticSnapshot> 
                 .map(|severity| format!("{severity:?}").to_lowercase()),
             source: diagnostic.source.clone(),
         })
-        .collect()
+        .collect())
+}
+
+pub fn selections_snapshot(
+    editor: &Editor,
+    path: Option<&str>,
+) -> anyhow::Result<Vec<SelectionSnapshot>> {
+    let (view, doc) = find_target_document(editor, path)?;
+    Ok(SelectionSnapshot::from_selection(
+        doc.selection(view.id),
+        doc.text().slice(..),
+    ))
 }
 
 pub fn parse_args<T>(arguments: Option<Value>) -> anyhow::Result<T>
@@ -210,6 +269,11 @@ pub fn goto_location(editor: &mut Editor, args: GotoLocationArgs) -> anyhow::Res
 }
 
 pub fn select_lines(editor: &mut Editor, args: SelectLinesArgs) -> anyhow::Result<String> {
+    let start_line = args
+        .resolved_start_line()
+        .ok_or_else(|| anyhow::anyhow!("missing field `start_line` or `line`"))?;
+    let end_line = args.end_line.unwrap_or(start_line);
+
     if let Some(path) = args.path {
         open_file(
             editor,
@@ -221,8 +285,6 @@ pub fn select_lines(editor: &mut Editor, args: SelectLinesArgs) -> anyhow::Resul
         )?;
     }
 
-    let start_line = args.start_line;
-    let end_line = args.end_line.unwrap_or(start_line);
     anyhow::ensure!(start_line > 0, "start_line must be greater than 0");
     anyhow::ensure!(end_line > 0, "end_line must be greater than 0");
     anyhow::ensure!(
@@ -265,5 +327,34 @@ fn resolve_path(path: &str) -> PathBuf {
         path
     } else {
         helix_stdx::env::current_working_dir().join(path)
+    }
+}
+
+fn find_target_document<'a>(
+    editor: &'a Editor,
+    path: Option<&str>,
+) -> anyhow::Result<(&'a helix_view::View, &'a helix_view::Document)> {
+    match path.map(resolve_path) {
+        Some(resolved) => {
+            let doc = editor
+                .documents()
+                .find(|doc| doc.path().is_some_and(|doc_path| *doc_path == resolved))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "file is not open in the current Helix session: {}",
+                        resolved.display()
+                    )
+                })?;
+
+            let view = editor
+                .tree
+                .views()
+                .find(|(view, _)| view.doc == doc.id())
+                .map(|(view, _)| view)
+                .ok_or_else(|| anyhow::anyhow!("file is open but not visible in any view"))?;
+
+            Ok((view, doc))
+        }
+        None => Ok(current_ref!(editor)),
     }
 }

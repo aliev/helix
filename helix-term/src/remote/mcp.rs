@@ -115,7 +115,7 @@ async fn handle_message(
                         "title": "Helix MCP Bridge",
                         "version": VERSION_AND_GIT_HASH,
                     },
-                    "instructions": "Connect this bridge to a running Helix instance started with --listen. Use the tools to inspect the live editor state or trigger reload-all."
+                    "instructions": "Connect this bridge to a running Helix instance started with --listen. For questions about the open file, highlighted code, selected lines, or the current error, use get_active_context first. Prefer get_active_context over lower-level document and selection reads. Use reload_all after external edits so Helix reflects on-disk changes."
                 }),
             )))
         }
@@ -128,8 +128,8 @@ async fn handle_message(
                 json!({
                     "tools": [
                         tool(
-                            "reload_all",
-                            "Reload every open document from disk in the running Helix session. Call this after external file edits so Helix reflects on-disk changes.",
+                            "get_active_context",
+                            "Read the currently active Helix context in one call: active document, current selections, and diagnostics for the active buffer. Use this first when the user asks about the open file, selected code, or the current error.",
                             json!({
                                 "type": "object",
                                 "properties": {},
@@ -137,8 +137,8 @@ async fn handle_message(
                             }),
                         ),
                         tool(
-                            "get_current_document",
-                            "Read the active document from the running Helix session, including its path, language, full text, and selection metadata.",
+                            "reload_all",
+                            "Reload every open document from disk in the running Helix session. Call this after external file edits so Helix reflects on-disk changes.",
                             json!({
                                 "type": "object",
                                 "properties": {},
@@ -155,17 +155,8 @@ async fn handle_message(
                             }),
                         ),
                         tool(
-                            "get_selections",
-                            "Read the current selection ranges from the active Helix document. Useful before opening or navigating elsewhere.",
-                            json!({
-                                "type": "object",
-                                "properties": {},
-                                "additionalProperties": false
-                            }),
-                        ),
-                        tool(
                             "open_file",
-                            "Open a file in the running Helix session and optionally jump to a 1-based line and column. Use this to move the user's editor to a file you want them to see.",
+                            "Open a file in the active Helix view and optionally jump to a 1-based line and column. This replaces the current document in that view; it does not open multiple files at once.",
                             json!({
                                 "type": "object",
                                 "properties": {
@@ -193,24 +184,26 @@ async fn handle_message(
                         ),
                         tool(
                             "select_lines",
-                            "Select a 1-based inclusive line range in the running Helix session. If path is provided, open that file first. Useful when the user asks you to highlight or select code.",
+                            "Select a 1-based inclusive line range in the running Helix session. If path is provided, open that file first. You can pass either `line` for a single line or `start_line` and optional `end_line` for a range.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
+                                    "line": { "type": "integer", "minimum": 1 },
                                     "start_line": { "type": "integer", "minimum": 1 },
                                     "end_line": { "type": "integer", "minimum": 1 }
                                 },
-                                "required": ["start_line"],
                                 "additionalProperties": false
                             }),
                         ),
                         tool(
                             "get_diagnostics",
-                            "Read diagnostics for the active Helix document after the editor has reloaded or re-analyzed it. If files were edited outside Helix, call reload_all first.",
+                            "Read diagnostics for the active Helix document, or for `path` if that file is currently open in Helix. If files were edited outside Helix, call reload_all first.",
                             json!({
                                 "type": "object",
-                                "properties": {},
+                                "properties": {
+                                    "path": { "type": "string" }
+                                },
                                 "additionalProperties": false
                             }),
                         )
@@ -234,6 +227,7 @@ async fn handle_message(
             .context("invalid tools/call params")?;
 
             let remote = match params.name.as_str() {
+                "get_active_context" => RemoteCommand::GetActiveContext,
                 "reload_all" => RemoteCommand::ReloadAll,
                 "get_current_document" => RemoteCommand::GetCurrentDocument,
                 "get_open_documents" => RemoteCommand::GetOpenDocuments,

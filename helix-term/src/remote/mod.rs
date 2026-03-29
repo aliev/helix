@@ -8,4 +8,7 @@ pub use ipc::{
     send_command, send_command_with_args, start_server, CurrentDocumentSnapshot, DiagnosticSnapshot,
     IpcRequest, IpcResponse, IpcServer, OpenDocumentSnapshot, RemoteCommand, SelectionSnapshot,
 };
-pub use params::{GotoLocationArgs, McpPresenceArgs, OpenFileArgs, SelectLinesArgs};
+pub use params::{
+    GetCurrentDocumentArgs, GetDiagnosticsArgs, GetSelectionsArgs, GotoLocationArgs,
+    McpPresenceArgs, OpenFileArgs, SelectLinesArgs,
+};

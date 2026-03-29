@@ -21,16 +21,39 @@ pub struct GotoLocationArgs {
 #[derive(Debug, Deserialize)]
 pub struct SelectLinesArgs {
     pub path: Option<String>,
-    #[serde(deserialize_with = "deserialize_usizeish")]
-    pub start_line: usize,
+    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
+    pub line: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
+    pub start_line: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub end_line: Option<usize>,
+}
+
+impl SelectLinesArgs {
+    pub fn resolved_start_line(&self) -> Option<usize> {
+        self.start_line.or(self.line)
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct McpPresenceArgs {
     pub client_id: String,
     pub client_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetDiagnosticsArgs {
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetCurrentDocumentArgs {
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GetSelectionsArgs {
+    pub path: Option<String>,
 }
 
 fn deserialize_usizeish<'de, D>(deserializer: D) -> Result<usize, D::Error>
