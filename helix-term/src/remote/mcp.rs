@@ -16,6 +16,7 @@ pub async fn run_stdio(socket_path: PathBuf) -> Result<i32> {
     let mut lines = BufReader::new(stdin).lines();
     let mut writer = BufWriter::new(stdout);
     let mut initialized = false;
+    let mut heartbeat_started = false;
 
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
@@ -36,14 +37,24 @@ pub async fn run_stdio(socket_path: PathBuf) -> Result<i32> {
 
         if let Some(items) = value.as_array() {
             for item in items {
-                if let Some(response) = handle_message(item.clone(), &socket_path, &mut initialized).await? {
+                if let Some(response) =
+                    handle_message(
+                        item.clone(),
+                        &socket_path,
+                        &mut initialized,
+                        &mut heartbeat_started,
+                    )
+                    .await?
+                {
                     write_json(&mut writer, &response).await?;
                 }
             }
             continue;
         }
 
-        if let Some(response) = handle_message(value, &socket_path, &mut initialized).await? {
+        if let Some(response) =
+            handle_message(value, &socket_path, &mut initialized, &mut heartbeat_started).await?
+        {
             write_json(&mut writer, &response).await?;
         }
     }
@@ -56,6 +67,7 @@ async fn handle_message(
     message: Value,
     socket_path: &PathBuf,
     initialized: &mut bool,
+    heartbeat_started: &mut bool,
 ) -> Result<Option<Value>> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return Ok(None);
@@ -65,11 +77,30 @@ async fn handle_message(
     match method {
         "initialize" => {
             let id = id.unwrap_or(Value::Null);
-            let _params: InitializeParams = serde_json::from_value(
+            let params: InitializeParams = serde_json::from_value(
                 message.get("params").cloned().unwrap_or_else(|| json!({})),
             )
             .context("invalid initialize params")?;
             *initialized = true;
+
+            let client_name = params
+                .client_info
+                .as_ref()
+                .map(|info| info.name.clone())
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "MCP".to_string());
+
+            let client_id = format!("mcp-{}", std::process::id());
+            let _ = send_presence_update(socket_path, &client_id, &client_name).await;
+            if !*heartbeat_started {
+                *heartbeat_started = true;
+                tokio::spawn(mcp_presence_heartbeat(
+                    socket_path.clone(),
+                    client_id.clone(),
+                    client_name.clone(),
+                ));
+            }
+
             Ok(Some(jsonrpc_result(
                 id,
                 json!({
@@ -264,6 +295,26 @@ async fn handle_message(
     }
 }
 
+async fn mcp_presence_heartbeat(socket_path: PathBuf, client_id: String, client_name: String) {
+    loop {
+        sleep(Duration::from_secs(10)).await;
+        let _ = send_presence_update(&socket_path, &client_id, &client_name).await;
+    }
+}
+
+async fn send_presence_update(socket_path: &PathBuf, client_id: &str, client_name: &str) -> Result<()> {
+    let _ = crate::remote::send_command_with_args(
+        socket_path,
+        RemoteCommand::UpdateMcpPresence,
+        Some(json!({
+            "client_id": client_id,
+            "client_name": client_name,
+        })),
+    )
+    .await?;
+    Ok(())
+}
+
 async fn send_remote_command(
     socket_path: &PathBuf,
     remote: RemoteCommand,
@@ -324,6 +375,15 @@ async fn write_json(writer: &mut BufWriter<io::Stdout>, value: &Value) -> Result
 struct InitializeParams {
     #[serde(rename = "protocolVersion")]
     _protocol_version: String,
+    #[serde(rename = "clientInfo")]
+    client_info: Option<ClientInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientInfo {
+    name: String,
+    #[serde(rename = "version")]
+    _version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

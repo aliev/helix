@@ -27,6 +27,12 @@ pub struct SelectLinesArgs {
     pub end_line: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct McpPresenceArgs {
+    pub client_id: String,
+    pub client_name: String,
+}
+
 fn deserialize_usizeish<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: serde::Deserializer<'de>,

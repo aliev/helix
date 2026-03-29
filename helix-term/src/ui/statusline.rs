@@ -157,6 +157,7 @@ where
         helix_view::editor::StatusLineElement::VersionControl => render_version_control,
         helix_view::editor::StatusLineElement::Register => render_register,
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
+        helix_view::editor::StatusLineElement::Mcp => render_mcp,
     }
 }
 
@@ -187,6 +188,21 @@ where
     } else {
         Style::default()
     };
+    write(context, Span::styled(content, style));
+}
+
+fn render_mcp<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let Some(content) = context.editor.mcp_status() else {
+        return;
+    };
+    let style = context
+        .editor
+        .theme
+        .try_get("ui.statusline.remote")
+        .unwrap_or_else(|| context.editor.theme.get("ui.statusline"));
     write(context, Span::styled(content, style));
 }
 

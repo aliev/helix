@@ -12,7 +12,8 @@ use crate::{
     commands::typed,
     remote::{
         CurrentDocumentSnapshot, DiagnosticSnapshot, GotoLocationArgs, IpcResponse,
-        OpenDocumentSnapshot, OpenFileArgs, RemoteCommand, SelectLinesArgs, SelectionSnapshot,
+        McpPresenceArgs, OpenDocumentSnapshot, OpenFileArgs, RemoteCommand, SelectLinesArgs,
+        SelectionSnapshot,
     },
 };
 
@@ -72,6 +73,13 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
         RemoteCommand::GetDiagnostics => match serde_json::to_value(current_diagnostics_snapshot(editor))
         {
             Ok(data) => IpcResponse::ok_with_data("current diagnostics snapshot", data),
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
+        RemoteCommand::UpdateMcpPresence => match parse_args::<McpPresenceArgs>(arguments) {
+            Ok(args) => {
+                editor.record_mcp_client_presence(args.client_id, args.client_name);
+                IpcResponse::ok("updated MCP client presence")
+            }
             Err(err) => IpcResponse::err(err.to_string()),
         },
     }

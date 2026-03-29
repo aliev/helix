@@ -66,6 +66,32 @@ use arc_swap::{
 pub const DIR_STACK_CAP: usize = 10;
 pub const DEFAULT_AUTO_SAVE_DELAY: u64 = 3000;
 
+fn format_mcp_client_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "MCP".to_string();
+    }
+
+    let simplified = trimmed
+        .trim_start_matches("claude-")
+        .trim_start_matches("codex-")
+        .replace('-'," ");
+    let title = simplified
+        .split_whitespace()
+        .next()
+        .unwrap_or(trimmed);
+
+    let mut out = String::new();
+    for ch in title.chars().take(10) {
+        out.push(ch);
+    }
+    if out.is_empty() {
+        "MCP".to_string()
+    } else {
+        out
+    }
+}
+
 fn deserialize_duration_millis<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -625,6 +651,7 @@ impl Default for StatusLineConfig {
             ],
             center: vec![],
             right: vec![
+                E::Mcp,
                 E::Diagnostics,
                 E::Selections,
                 E::Register,
@@ -728,6 +755,9 @@ pub enum StatusLineElement {
 
     /// The base of current working directory
     CurrentWorkingDirectory,
+
+    /// Active MCP client presence
+    Mcp,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -1217,6 +1247,7 @@ pub struct Editor {
 
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
+    pub mcp_clients: HashMap<String, McpClientPresence>,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1265,6 +1296,12 @@ pub struct Editor {
 
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpClientPresence {
+    pub name: String,
+    pub last_seen: Instant,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1364,6 +1401,7 @@ impl Editor {
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
+            mcp_clients: HashMap::new(),
             syn_loader,
             theme_loader,
             last_theme: None,
@@ -1421,6 +1459,34 @@ impl Editor {
 
     pub fn config(&self) -> DynGuard<Config> {
         self.config.load()
+    }
+
+    pub fn record_mcp_client_presence(&mut self, client_id: String, client_name: String) {
+        self.mcp_clients.insert(
+            client_id,
+            McpClientPresence {
+                name: client_name,
+                last_seen: Instant::now(),
+            },
+        );
+        self.needs_redraw = true;
+    }
+
+    pub fn mcp_status(&self) -> Option<String> {
+        const MCP_PRESENCE_TTL: Duration = Duration::from_secs(30);
+
+        let now = Instant::now();
+        let active: Vec<_> = self
+            .mcp_clients
+            .values()
+            .filter(|client| now.duration_since(client.last_seen) <= MCP_PRESENCE_TTL)
+            .collect();
+
+        match active.as_slice() {
+            [] => None,
+            [client] => Some(format!(" MCP:{} ", format_mcp_client_name(&client.name))),
+            many => Some(format!(" MCP:{} ", many.len())),
+        }
     }
 
     /// Call if the config has changed to let the editor update all

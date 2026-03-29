@@ -16,6 +16,7 @@ pub enum RemoteCommand {
     GotoLocation,
     SelectLines,
     GetDiagnostics,
+    UpdateMcpPresence,
 }
 
 impl RemoteCommand {
@@ -29,6 +30,7 @@ impl RemoteCommand {
             "goto-location" => Ok(Self::GotoLocation),
             "select-lines" => Ok(Self::SelectLines),
             "get-diagnostics" => Ok(Self::GetDiagnostics),
+            "update-mcp-presence" => Ok(Self::UpdateMcpPresence),
             other => bail!("unsupported remote command: {other}"),
         }
     }
@@ -43,6 +45,7 @@ impl RemoteCommand {
             Self::GotoLocation => "goto-location",
             Self::SelectLines => "select-lines",
             Self::GetDiagnostics => "get-diagnostics",
+            Self::UpdateMcpPresence => "update-mcp-presence",
         }
     }
 }
