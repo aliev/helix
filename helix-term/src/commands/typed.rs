@@ -3054,10 +3054,13 @@ impl GitConflictPopup {
         let section_label_style = hint_style;
         let shortcut_style = hint_style.add_modifier(Modifier::BOLD);
         let separator = "─".repeat(44);
+        let line_range = format!("L{}-L{}", conflict.start_line + 1, conflict.end_line + 1);
 
         let mut lines = vec![
             Spans::from(vec![
                 Span::styled(format!("Conflict {}/{}", idx + 1, total), title_style),
+                Span::raw("   "),
+                Span::styled(line_range, hint_style),
                 Span::raw("   "),
                 Span::styled("o", shortcut_style),
                 Span::styled(" ours", hint_style),
@@ -3232,7 +3235,7 @@ fn render_diff_hunk_markdown(
 
     let mut rendered = String::new();
     let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
-    let _ = writeln!(rendered, "`r` reset hunk, `Esc` close\n");
+    let _ = writeln!(rendered, "`]g` next, `[g` previous, `r` reset hunk, `Esc` close\n");
     let _ = writeln!(
         rendered,
         "removes {} line{} and adds {} line{}\n",
