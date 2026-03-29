@@ -517,6 +517,12 @@ impl MappableCommand {
         remove_primary_selection, "Remove primary selection",
         completion, "Invoke completion popup",
         hover, "Show docs for item under cursor",
+        git_conflict_preview, "Show merge conflict under cursor",
+        git_conflict_next, "Jump to next merge conflict",
+        git_conflict_prev, "Jump to previous merge conflict",
+        git_conflict_ours, "Resolve merge conflict with ours",
+        git_conflict_theirs, "Resolve merge conflict with theirs",
+        git_conflict_both, "Resolve merge conflict with both sides",
         git_hunk_preview, "Show sticky git hunk preview under cursor",
         git_reset_hunk, "Reset git hunk under cursor",
         toggle_comments, "Comment/uncomment selections",
@@ -5849,6 +5855,30 @@ fn execute_typed_command(cx: &mut Context, name: &str) {
 
 fn git_hunk_preview(cx: &mut Context) {
     execute_typed_command(cx, "git-hunk-preview");
+}
+
+fn git_conflict_preview(cx: &mut Context) {
+    execute_typed_command(cx, "git-conflict-preview");
+}
+
+fn git_conflict_next(cx: &mut Context) {
+    execute_typed_command(cx, "git-conflict-next");
+}
+
+fn git_conflict_prev(cx: &mut Context) {
+    execute_typed_command(cx, "git-conflict-prev");
+}
+
+fn git_conflict_ours(cx: &mut Context) {
+    execute_typed_command(cx, "git-conflict-ours");
+}
+
+fn git_conflict_theirs(cx: &mut Context) {
+    execute_typed_command(cx, "git-conflict-theirs");
+}
+
+fn git_conflict_both(cx: &mut Context) {
+    execute_typed_command(cx, "git-conflict-both");
 }
 
 fn git_reset_hunk(cx: &mut Context) {

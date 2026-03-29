@@ -16,10 +16,15 @@ use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
 use helix_view::expansion;
+use helix_view::graphics::Rect;
 use serde_json::Value;
 use ui::completers::{self, Completer};
 
 pub(crate) const GIT_HUNK_PREVIEW_ID: &str = "git-hunk-preview";
+const CONFLICT_START_MARKER: &str = "<<<<<<<";
+const CONFLICT_BASE_MARKER: &str = "|||||||";
+const CONFLICT_SEPARATOR_MARKER: &str = "=======";
+const CONFLICT_END_MARKER: &str = ">>>>>>>";
 
 #[derive(Clone)]
 pub struct TypableCommand {
@@ -2882,6 +2887,184 @@ fn current_diff_hunk(
     ))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ConflictBlock {
+    start_line: usize,
+    base_line: Option<usize>,
+    separator_line: usize,
+    end_line: usize,
+}
+
+impl ConflictBlock {
+    fn contains_line(self, line: usize) -> bool {
+        (self.start_line..=self.end_line).contains(&line)
+    }
+
+    fn range(self, text: RopeSlice) -> std::ops::Range<usize> {
+        text.line_to_char(self.start_line)..text.line_to_char((self.end_line + 1).min(text.len_lines()))
+    }
+
+    fn ours_line_range(self) -> std::ops::Range<usize> {
+        let end = self.base_line.unwrap_or(self.separator_line);
+        (self.start_line + 1)..end
+    }
+
+    fn theirs_line_range(self) -> std::ops::Range<usize> {
+        (self.separator_line + 1)..self.end_line
+    }
+}
+
+fn line_starts_with(text: RopeSlice, line_idx: usize, prefix: &str) -> bool {
+    text.line(line_idx).to_string().starts_with(prefix)
+}
+
+fn parse_conflict_blocks(text: RopeSlice) -> Vec<ConflictBlock> {
+    let mut conflicts = Vec::new();
+    let mut line = 0;
+
+    while line < text.len_lines() {
+        if !line_starts_with(text, line, CONFLICT_START_MARKER) {
+            line += 1;
+            continue;
+        }
+
+        let start_line = line;
+        line += 1;
+
+        let mut base_line = None;
+        while line < text.len_lines()
+            && !line_starts_with(text, line, CONFLICT_BASE_MARKER)
+            && !line_starts_with(text, line, CONFLICT_SEPARATOR_MARKER)
+        {
+            line += 1;
+        }
+        if line >= text.len_lines() {
+            break;
+        }
+
+        if line_starts_with(text, line, CONFLICT_BASE_MARKER) {
+            base_line = Some(line);
+            line += 1;
+            while line < text.len_lines() && !line_starts_with(text, line, CONFLICT_SEPARATOR_MARKER)
+            {
+                line += 1;
+            }
+            if line >= text.len_lines() {
+                break;
+            }
+        }
+
+        let separator_line = line;
+        line += 1;
+        while line < text.len_lines() && !line_starts_with(text, line, CONFLICT_END_MARKER) {
+            line += 1;
+        }
+        if line >= text.len_lines() {
+            break;
+        }
+
+        conflicts.push(ConflictBlock {
+            start_line,
+            base_line,
+            separator_line,
+            end_line: line,
+        });
+        line += 1;
+    }
+
+    conflicts
+}
+
+fn current_conflict(editor: &Editor) -> anyhow::Result<(ConflictBlock, usize, usize)> {
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text().slice(..);
+    let cursor_line = doc.selection(view.id).primary().cursor_line(text);
+    let conflicts = parse_conflict_blocks(text);
+    let Some((idx, conflict)) = conflicts
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, conflict)| conflict.contains_line(cursor_line))
+    else {
+        bail!("There is no merge conflict under the cursor");
+    };
+
+    Ok((conflict, idx, conflicts.len()))
+}
+
+fn conflict_section_text(text: RopeSlice, lines: std::ops::Range<usize>) -> Tendril {
+    let start = text.line_to_char(lines.start);
+    let end = text.line_to_char(lines.end.min(text.len_lines()));
+    text.slice(start..end).chunks().collect()
+}
+
+fn render_conflict_preview(
+    text: RopeSlice,
+    conflict: ConflictBlock,
+    idx: usize,
+    total: usize,
+) -> String {
+    let ours = conflict_section_text(text, conflict.ours_line_range());
+    let theirs = conflict_section_text(text, conflict.theirs_line_range());
+
+    format!(
+        "### Conflict {}/{}\n\n`o` accept ours, `t` accept theirs, `b` accept both, `Esc` close\n\n**Ours**\n```text\n{}```\n\n**Theirs**\n```text\n{}```",
+        idx + 1,
+        total,
+        ours,
+        theirs
+    )
+}
+
+struct GitConflictPopup {
+    markdown: ui::Markdown,
+}
+
+impl GitConflictPopup {
+    fn new(contents: String, editor: &Editor) -> Self {
+        Self {
+            markdown: ui::Markdown::new(contents, editor.syn_loader.clone()),
+        }
+    }
+}
+
+impl Component for GitConflictPopup {
+    fn handle_event(&mut self, event: &compositor::Event, cx: &mut compositor::Context) -> compositor::EventResult {
+        match event {
+            compositor::Event::Key(key) => match key.code {
+                KeyCode::Char('o') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    compositor.remove("git-conflict-preview");
+                    if let Err(err) = resolve_git_conflict_ours(cx, Args::default(), PromptEvent::Validate) {
+                        cx.editor.set_error(err.to_string());
+                    }
+                }))),
+                KeyCode::Char('t') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    compositor.remove("git-conflict-preview");
+                    if let Err(err) = resolve_git_conflict_theirs(cx, Args::default(), PromptEvent::Validate) {
+                        cx.editor.set_error(err.to_string());
+                    }
+                }))),
+                KeyCode::Char('b') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    compositor.remove("git-conflict-preview");
+                    if let Err(err) = resolve_git_conflict_both(cx, Args::default(), PromptEvent::Validate) {
+                        cx.editor.set_error(err.to_string());
+                    }
+                }))),
+                _ => self.markdown.handle_event(event, cx),
+            },
+            _ => self.markdown.handle_event(event, cx),
+        }
+    }
+
+    fn render(&mut self, area: Rect, frame: &mut tui::buffer::Buffer, cx: &mut compositor::Context) {
+        self.markdown.render(area, frame, cx);
+    }
+
+    fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        self.markdown.required_size(viewport)
+    }
+}
+
 fn hunk_line_text(text: RopeSlice, line_idx: u32) -> String {
     text.line(line_idx as usize)
         .to_string()
@@ -2983,6 +3166,160 @@ fn preview_diff_hunk(
         .set_status("Opened sticky git hunk preview. Press Esc to close.");
 
     Ok(())
+}
+
+fn preview_git_conflict(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (conflict, idx, total) = current_conflict(cx.editor)?;
+    let (_view, doc) = current_ref!(cx.editor);
+    let preview = render_conflict_preview(doc.text().slice(..), conflict, idx, total);
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let contents = GitConflictPopup::new(preview, editor);
+                let popup = Popup::new("git-conflict-preview", contents)
+                    .position(editor.cursor().0)
+                    .position_bias(Open::Above)
+                    .auto_close(false);
+                compositor.replace_or_push("git-conflict-preview", popup);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+
+    Ok(())
+}
+
+fn goto_git_conflict_impl(editor: &mut Editor, direction: Direction) -> anyhow::Result<()> {
+    let scrolloff = editor.config().scrolloff;
+    let (view, doc) = current!(editor);
+    let text = doc.text().slice(..);
+    let cursor_line = doc.selection(view.id).primary().cursor_line(text);
+    let conflicts = parse_conflict_blocks(text);
+    let target = match direction {
+        Direction::Forward => conflicts
+            .into_iter()
+            .find(|conflict| conflict.start_line > cursor_line),
+        Direction::Backward => conflicts
+            .into_iter()
+            .rev()
+            .find(|conflict| conflict.end_line < cursor_line),
+    };
+    let Some(conflict) = target else {
+        bail!(
+            "{} merge conflict",
+            match direction {
+                Direction::Forward => "No next",
+                Direction::Backward => "No previous",
+            }
+        );
+    };
+
+    doc.set_selection(view.id, Selection::point(text.line_to_char(conflict.start_line)));
+    view.ensure_cursor_in_view(doc, scrolloff);
+    Ok(())
+}
+
+fn goto_next_git_conflict(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    goto_git_conflict_impl(cx.editor, Direction::Forward)
+}
+
+fn goto_prev_git_conflict(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    goto_git_conflict_impl(cx.editor, Direction::Backward)
+}
+
+fn resolve_git_conflict(
+    cx: &mut compositor::Context,
+    event: PromptEvent,
+    replacement_for: impl Fn(ConflictBlock, RopeSlice) -> Tendril,
+    status: &str,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let scrolloff = cx.editor.config().scrolloff;
+    let (conflict, idx, total) = current_conflict(cx.editor)?;
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+    let range = conflict.range(text);
+    let replacement = replacement_for(conflict, text);
+    let transaction = Transaction::change(
+        doc.text(),
+        [(range.start, range.end, Some(replacement))].into_iter(),
+    );
+
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    view.ensure_cursor_in_view(doc, scrolloff);
+    cx.editor.set_status(format!("{status} for conflict {}/{}", idx + 1, total));
+    Ok(())
+}
+
+fn resolve_git_conflict_ours(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    resolve_git_conflict(
+        cx,
+        event,
+        |conflict, text| conflict_section_text(text, conflict.ours_line_range()),
+        "Accepted ours",
+    )
+}
+
+fn resolve_git_conflict_theirs(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    resolve_git_conflict(
+        cx,
+        event,
+        |conflict, text| conflict_section_text(text, conflict.theirs_line_range()),
+        "Accepted theirs",
+    )
+}
+
+fn resolve_git_conflict_both(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    resolve_git_conflict(
+        cx,
+        event,
+        |conflict, text| {
+            let mut combined = conflict_section_text(text, conflict.ours_line_range());
+            combined.push_str(&conflict_section_text(text, conflict.theirs_line_range()));
+            combined
+        },
+        "Accepted both",
+    )
 }
 
 fn reset_diff_hunk(
@@ -4276,6 +4613,72 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show the diff hunk under the cursor in a popup.",
         fun: preview_diff_hunk,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-conflict-preview",
+        aliases: &[],
+        doc: "Show the merge conflict under the cursor in a popup.",
+        fun: preview_git_conflict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-conflict-next",
+        aliases: &[],
+        doc: "Jump to the next merge conflict.",
+        fun: goto_next_git_conflict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-conflict-prev",
+        aliases: &[],
+        doc: "Jump to the previous merge conflict.",
+        fun: goto_prev_git_conflict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-conflict-ours",
+        aliases: &[],
+        doc: "Resolve the merge conflict under the cursor using ours.",
+        fun: resolve_git_conflict_ours,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-conflict-theirs",
+        aliases: &[],
+        doc: "Resolve the merge conflict under the cursor using theirs.",
+        fun: resolve_git_conflict_theirs,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-conflict-both",
+        aliases: &[],
+        doc: "Resolve the merge conflict under the cursor using both sides.",
+        fun: resolve_git_conflict_both,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
