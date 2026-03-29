@@ -17,7 +17,9 @@ use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
 use helix_view::expansion;
 use helix_view::graphics::Rect;
+use helix_view::theme::Modifier;
 use serde_json::Value;
+use tui::text::{Span, Spans, Text as TuiText};
 use ui::completers::{self, Completer};
 
 pub(crate) const GIT_HUNK_PREVIEW_ID: &str = "git-hunk-preview";
@@ -2998,38 +3000,84 @@ fn conflict_section_text(text: RopeSlice, lines: std::ops::Range<usize>) -> Tend
     text.slice(start..end).chunks().collect()
 }
 
-fn render_conflict_preview(
-    text: RopeSlice,
-    conflict: ConflictBlock,
-    idx: usize,
-    total: usize,
-) -> String {
-    let ours = conflict_section_text(text, conflict.ours_line_range());
-    let theirs = conflict_section_text(text, conflict.theirs_line_range());
-
-    format!(
-        "### Conflict {}/{}\n\n`o` accept ours, `t` accept theirs, `b` accept both, `Esc` close\n\n**Ours**\n```text\n{}```\n\n**Theirs**\n```text\n{}```",
-        idx + 1,
-        total,
-        ours,
-        theirs
-    )
-}
-
 struct GitConflictPopup {
-    markdown: ui::Markdown,
+    text: ui::Text,
 }
 
 impl GitConflictPopup {
-    fn new(contents: String, editor: &Editor) -> Self {
+    fn new(
+        conflict: ConflictBlock,
+        idx: usize,
+        total: usize,
+        editor: &Editor,
+        text: RopeSlice,
+    ) -> Self {
+        let ours = conflict_section_text(text, conflict.ours_line_range());
+        let theirs = conflict_section_text(text, conflict.theirs_line_range());
+
+        let base_style = editor.theme.get("ui.text");
+        let title_style = base_style.add_modifier(Modifier::BOLD);
+        let hint_style = editor.theme.get("ui.virtual");
+        let separator_style = editor
+            .theme
+            .try_get("ui.window")
+            .unwrap_or(hint_style);
+        let ours_style = editor
+            .theme
+            .find_highlight_exact("diff.minus")
+            .map(|highlight| editor.theme.highlight(highlight))
+            .unwrap_or(base_style)
+            .add_modifier(Modifier::BOLD);
+        let theirs_style = editor
+            .theme
+            .find_highlight_exact("diff.plus")
+            .map(|highlight| editor.theme.highlight(highlight))
+            .unwrap_or(base_style)
+            .add_modifier(Modifier::BOLD);
+        let section_label_style = hint_style.add_modifier(Modifier::BOLD);
+
+        let mut lines = vec![
+            Spans::from(Span::styled(format!("Conflict {}/{}", idx + 1, total), title_style)),
+            Spans::default(),
+            Spans::from(Span::styled(
+                "o accept ours, t accept theirs, b accept both, Esc close",
+                hint_style,
+            )),
+            Spans::default(),
+            Spans::from(vec![
+                Span::styled("OURS", ours_style),
+                Span::styled("  current branch", section_label_style),
+            ]),
+            Spans::from(Span::styled("─".repeat(48), separator_style)),
+        ];
+        lines.extend(
+            ours.lines()
+                .map(|line| Spans::from(Span::styled(line.to_string(), base_style))),
+        );
+        lines.push(Spans::default());
+        lines.push(Spans::from(vec![
+            Span::styled("THEIRS", theirs_style),
+            Span::styled("  incoming branch", section_label_style),
+        ]));
+        lines.push(Spans::from(Span::styled("─".repeat(48), separator_style)));
+        lines.extend(
+            theirs
+                .lines()
+                .map(|line| Spans::from(Span::styled(line.to_string(), base_style))),
+        );
+
         Self {
-            markdown: ui::Markdown::new(contents, editor.syn_loader.clone()),
+            text: ui::Text::from(TuiText::from(lines)),
         }
     }
 }
 
 impl Component for GitConflictPopup {
-    fn handle_event(&mut self, event: &compositor::Event, cx: &mut compositor::Context) -> compositor::EventResult {
+    fn handle_event(
+        &mut self,
+        event: &compositor::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
         match event {
             compositor::Event::Key(key) => match key.code {
                 KeyCode::Char('o') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
@@ -3050,18 +3098,18 @@ impl Component for GitConflictPopup {
                         cx.editor.set_error(err.to_string());
                     }
                 }))),
-                _ => self.markdown.handle_event(event, cx),
+                _ => self.text.handle_event(event, cx),
             },
-            _ => self.markdown.handle_event(event, cx),
+            _ => self.text.handle_event(event, cx),
         }
     }
 
     fn render(&mut self, area: Rect, frame: &mut tui::buffer::Buffer, cx: &mut compositor::Context) {
-        self.markdown.render(area, frame, cx);
+        self.text.render(area, frame, cx);
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
-        self.markdown.required_size(viewport)
+        self.text.required_size(viewport)
     }
 }
 
@@ -3178,13 +3226,13 @@ fn preview_git_conflict(
     }
 
     let (conflict, idx, total) = current_conflict(cx.editor)?;
-    let (_view, doc) = current_ref!(cx.editor);
-    let preview = render_conflict_preview(doc.text().slice(..), conflict, idx, total);
 
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
-                let contents = GitConflictPopup::new(preview, editor);
+                let (_view, doc) = current_ref!(editor);
+                let contents =
+                    GitConflictPopup::new(conflict, idx, total, editor, doc.text().slice(..));
                 let popup = Popup::new("git-conflict-preview", contents)
                     .position(editor.cursor().0)
                     .position_bias(Open::Above)
