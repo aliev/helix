@@ -3192,6 +3192,14 @@ impl Component for GitHunkPopup {
     ) -> compositor::EventResult {
         match event {
             compositor::Event::Key(key) => match key.code {
+                KeyCode::Char('y') => compositor::EventResult::Consumed(Some(Box::new(
+                    |_compositor, cx| {
+                        if let Err(err) = yank_diff_hunk(cx, Args::default(), PromptEvent::Validate)
+                        {
+                            cx.editor.set_error(err.to_string());
+                        }
+                    },
+                ))),
                 KeyCode::Char('r') => compositor::EventResult::Consumed(Some(Box::new(
                     |compositor, cx| {
                         compositor.remove(GIT_HUNK_PREVIEW_ID);
@@ -3217,37 +3225,21 @@ impl Component for GitHunkPopup {
     }
 }
 
-fn render_diff_hunk_markdown(
-    hunk_idx: u32,
-    total_hunks: u32,
+fn render_diff_hunk_patch(
     hunk: Hunk,
     diff_base: RopeSlice,
     doc_text: RopeSlice,
+    context_before_start: u32,
+    context_after_end: u32,
 ) -> String {
-    const CONTEXT_LINES: u32 = 2;
-
-    let removed_count = hunk.before.len();
-    let added_count = hunk.after.len();
-    let before_start = hunk.before.start + 1;
-    let after_start = hunk.after.start + 1;
-    let context_before_start = hunk.after.start.saturating_sub(CONTEXT_LINES);
-    let context_after_end = (hunk.after.end + CONTEXT_LINES).min(doc_text.len_lines() as u32);
-
     let mut rendered = String::new();
-    let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
-    let _ = writeln!(rendered, "`]g` next, `[g` previous, `r` reset hunk, `Esc` close\n");
     let _ = writeln!(
         rendered,
-        "removes {} line{} and adds {} line{}\n",
-        removed_count,
-        if removed_count == 1 { "" } else { "s" },
-        added_count,
-        if added_count == 1 { "" } else { "s" }
-    );
-    let _ = writeln!(
-        rendered,
-        "```diff\n@@ -{},{} +{},{} @@",
-        before_start, removed_count, after_start, added_count
+        "@@ -{},{} +{},{} @@",
+        hunk.before.start + 1,
+        hunk.before.len(),
+        hunk.after.start + 1,
+        hunk.after.len()
     );
 
     for line_idx in context_before_start..hunk.after.start {
@@ -3262,6 +3254,46 @@ fn render_diff_hunk_markdown(
     for line_idx in hunk.after.end..context_after_end {
         let _ = writeln!(rendered, "  {}", hunk_line_text(doc_text, line_idx));
     }
+
+    rendered
+}
+
+fn render_diff_hunk_markdown(
+    hunk_idx: u32,
+    total_hunks: u32,
+    hunk: Hunk,
+    diff_base: RopeSlice,
+    doc_text: RopeSlice,
+) -> String {
+    const CONTEXT_LINES: u32 = 2;
+
+    let removed_count = hunk.before.len();
+    let added_count = hunk.after.len();
+    let context_before_start = hunk.after.start.saturating_sub(CONTEXT_LINES);
+    let context_after_end = (hunk.after.end + CONTEXT_LINES).min(doc_text.len_lines() as u32);
+
+    let mut rendered = String::new();
+    let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
+    let _ = writeln!(
+        rendered,
+        "`]g` next, `[g` previous, `y` copy hunk, `r` reset hunk, `Esc` close\n"
+    );
+    let _ = writeln!(
+        rendered,
+        "removes {} line{} and adds {} line{}\n",
+        removed_count,
+        if removed_count == 1 { "" } else { "s" },
+        added_count,
+        if added_count == 1 { "" } else { "s" }
+    );
+    rendered.push_str("```diff\n");
+    rendered.push_str(&render_diff_hunk_patch(
+        hunk,
+        diff_base,
+        doc_text,
+        context_before_start,
+        context_after_end,
+    ));
     rendered.push_str("```");
     rendered
 }
@@ -3275,6 +3307,35 @@ fn git_hunk_preview_markdown(editor: &Editor) -> anyhow::Result<String> {
         diff_base.slice(..),
         doc_text.slice(..),
     ))
+}
+
+fn yank_diff_hunk(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    const CONTEXT_LINES: u32 = 2;
+
+    let (_hunk_idx, _total_hunks, hunk, diff_base, doc_text, _view_id) = current_diff_hunk(cx.editor)?;
+    let diff_base = diff_base.slice(..);
+    let doc_text = doc_text.slice(..);
+    let context_before_start = hunk.after.start.saturating_sub(CONTEXT_LINES);
+    let context_after_end = (hunk.after.end + CONTEXT_LINES).min(doc_text.len_lines() as u32);
+    let patch = render_diff_hunk_patch(
+        hunk,
+        diff_base,
+        doc_text,
+        context_before_start,
+        context_after_end,
+    );
+
+    cx.editor.registers.write('+', vec![patch])?;
+    cx.editor.set_status("Copied current diff hunk to system clipboard");
+    Ok(())
 }
 
 pub(crate) fn refresh_git_hunk_preview(editor: &mut Editor, compositor: &mut Compositor) {
@@ -4862,6 +4923,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Reset the diff hunk under the cursor.",
         fun: reset_diff_hunk,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-yank-hunk",
+        aliases: &[],
+        doc: "Copy the diff hunk under the cursor to the system clipboard.",
+        fun: yank_diff_hunk,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

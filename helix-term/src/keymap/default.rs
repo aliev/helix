@@ -243,6 +243,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "r" => git_reset_hunk,
                 "t" => git_conflict_theirs,
                 "b" => git_conflict_both,
+                "y" => git_yank_hunk,
             },
             "a" => code_action,
             "'" => last_picker,
