@@ -78,10 +78,15 @@ impl From<DocumentId> for PathOrId<'_> {
     }
 }
 
-type FileCallback<T> = Box<dyn for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>>>;
+type PreviewCallback<T> = Box<dyn for<'a> Fn(&'a Editor, &'a T) -> Option<PreviewLocation<'a>>>;
 
 /// File path and range of lines (used to align and highlight lines)
 pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
+
+pub enum PreviewLocation<'a> {
+    File(FileLocation<'a>),
+    Document(Box<Document>, Option<(usize, usize)>),
+}
 
 pub enum CachedPreview {
     Document(Box<Document>),
@@ -96,6 +101,7 @@ pub enum CachedPreview {
 pub enum Preview<'picker, 'editor> {
     Cached(&'picker CachedPreview),
     EditorDocument(&'editor Document),
+    OwnedDocument(Box<Document>),
 }
 
 impl Preview<'_, '_> {
@@ -103,6 +109,7 @@ impl Preview<'_, '_> {
         match self {
             Preview::EditorDocument(doc) => Some(doc),
             Preview::Cached(CachedPreview::Document(doc)) => Some(doc),
+            Preview::OwnedDocument(doc) => Some(doc),
             _ => None,
         }
     }
@@ -117,7 +124,7 @@ impl Preview<'_, '_> {
     /// Alternate text to show for the preview.
     fn placeholder(&self) -> &str {
         match *self {
-            Self::EditorDocument(_) => "<Invalid file location>",
+            Self::EditorDocument(_) | Self::OwnedDocument(_) => "<Invalid file location>",
             Self::Cached(preview) => match preview {
                 CachedPreview::Document(_) => "<Invalid file location>",
                 CachedPreview::Directory(_) => "<Invalid directory location>",
@@ -265,7 +272,7 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
     /// Given an item in the picker, return the file path and line number to display.
-    file_fn: Option<FileCallback<T>>,
+    preview_fn: Option<PreviewCallback<T>>,
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
@@ -391,7 +398,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             widths,
             preview_cache: HashMap::new(),
             read_buffer: Vec::with_capacity(1024),
-            file_fn: None,
+            preview_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
         }
@@ -417,10 +424,23 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         mut self,
         preview_fn: impl for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>> + 'static,
     ) -> Self {
-        self.file_fn = Some(Box::new(preview_fn));
+        self.preview_fn = Some(Box::new(move |editor, item| {
+            preview_fn(editor, item).map(PreviewLocation::File)
+        }));
         // assumption: if we have a preview we are matching paths... If this is ever
         // not true this could be a separate builder function
         self.matcher.update_config(Config::DEFAULT.match_paths());
+        self
+    }
+
+    pub fn with_preview_document(
+        mut self,
+        preview_fn: impl for<'a> Fn(&'a Editor, &'a T) -> Option<(Box<Document>, Option<(usize, usize)>)>
+            + 'static,
+    ) -> Self {
+        self.preview_fn = Some(Box::new(move |editor, item| {
+            preview_fn(editor, item).map(|(doc, range)| PreviewLocation::Document(doc, range))
+        }));
         self
     }
 
@@ -587,9 +607,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         editor: &'editor Editor,
     ) -> Option<(Preview<'picker, 'editor>, Option<(usize, usize)>)> {
         let current = self.selection()?;
-        let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, current)?;
+        let preview = (self.preview_fn.as_ref()?)(editor, current)?;
 
-        match path_or_id {
+        match preview {
+            PreviewLocation::Document(doc, range) => Some((Preview::OwnedDocument(doc), range)),
+            PreviewLocation::File((path_or_id, range)) => match path_or_id {
             PathOrId::Path(path) => {
                 if let Some(doc) = editor.document_by_path(path) {
                     return Some((Preview::EditorDocument(doc), range));
@@ -678,6 +700,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 let doc = editor.documents.get(&id).unwrap();
                 Some((Preview::EditorDocument(doc), range))
             }
+        },
         }
     }
 
@@ -754,7 +777,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let mut indices = Vec::new();
         let mut matcher = MATCHER.lock();
         matcher.config = Config::DEFAULT;
-        if self.file_fn.is_some() {
+        if self.preview_fn.is_some() {
             matcher.config.set_match_paths()
         }
 
@@ -1034,7 +1057,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         // +---------+ +---------+
 
         let render_preview =
-            self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
+            self.show_preview && self.preview_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
         let picker_width = if render_preview {
             area.width / 2
@@ -1174,7 +1197,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
 
         // prompt area
         let render_preview =
-            self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
+            self.show_preview && self.preview_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
         let picker_width = if render_preview {
             area.width / 2

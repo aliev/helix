@@ -1870,6 +1870,40 @@ impl Document {
         self.earlier_later_impl(view, uk, false)
     }
 
+    pub fn jump_to_history_revision(&mut self, view: &mut View, revision: usize) -> bool {
+        if !self.changes.is_empty() {
+            self.append_changes_to_history(view);
+        }
+
+        let mut history = self.history.take();
+        let Some(txns) = history.jump_to_revision(revision) else {
+            self.history.set(history);
+            return false;
+        };
+        let was_noop = txns.is_empty();
+        let mut success = was_noop;
+        for txn in txns {
+            if self.apply_impl(&txn, view.id, true) {
+                success = true;
+            }
+        }
+        self.history.set(history);
+
+        if success {
+            self.changes = ChangeSet::new(self.text().slice(..));
+            view.sync_changes(self);
+        }
+
+        success
+    }
+
+    pub fn with_history<R>(&self, f: impl FnOnce(&History) -> R) -> R {
+        let history = self.history.take();
+        let result = f(&history);
+        self.history.set(history);
+        result
+    }
+
     /// Commit pending changes to history
     pub fn append_changes_to_history(&mut self, view: &mut View) {
         if self.changes.is_empty() {

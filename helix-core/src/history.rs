@@ -56,6 +56,15 @@ pub struct History {
     current: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct RevisionInfo<'a> {
+    pub id: usize,
+    pub parent: usize,
+    pub last_child: Option<usize>,
+    pub transaction: &'a Transaction,
+    pub is_current: bool,
+}
+
 /// A single point in history. See [History] for more information.
 #[derive(Debug, Clone)]
 struct Revision {
@@ -302,6 +311,49 @@ impl History {
             Steps(n) => self.jump_forward(n),
             TimePeriod(d) => self.jump_duration_forward(d),
         }
+    }
+
+    pub fn revisions(&self) -> impl Iterator<Item = RevisionInfo<'_>> + '_ {
+        self.revisions
+            .iter()
+            .enumerate()
+            .map(|(id, revision)| RevisionInfo {
+                id,
+                parent: revision.parent,
+                last_child: revision.last_child.map(NonZeroUsize::get),
+                transaction: &revision.transaction,
+                is_current: id == self.current,
+            })
+    }
+
+    pub fn jump_to_revision(&mut self, revision: usize) -> Option<Vec<Transaction>> {
+        if revision >= self.revisions.len() {
+            return None;
+        }
+
+        Some(self.jump_to(revision))
+    }
+
+    pub fn root_doc(&self, current_doc: &Rope) -> Rope {
+        let mut doc = current_doc.clone();
+        let mut revision = self.current;
+        while revision != 0 {
+            self.revisions[revision].inversion.apply(&mut doc);
+            revision = self.revisions[revision].parent;
+        }
+        doc
+    }
+
+    pub fn snapshot_at(&self, current_doc: &Rope, revision: usize) -> Option<Rope> {
+        if revision >= self.revisions.len() {
+            return None;
+        }
+
+        let mut doc = self.root_doc(current_doc);
+        for node in self.path_up(revision, 0).iter().rev() {
+            self.revisions[*node].transaction.apply(&mut doc);
+        }
+        Some(doc)
     }
 
     pub fn serialize(&self, current_doc: &Rope) -> serde_json::Result<String> {
