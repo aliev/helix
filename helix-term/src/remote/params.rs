@@ -1,4 +1,25 @@
 use serde::Deserialize;
+use helix_view::tree;
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SplitDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl SplitDirection {
+    pub fn focus_direction(self) -> tree::Direction {
+        match self {
+            Self::Left => tree::Direction::Left,
+            Self::Right => tree::Direction::Right,
+            Self::Up => tree::Direction::Up,
+            Self::Down => tree::Direction::Down,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct OpenFileArgs {
@@ -7,6 +28,21 @@ pub struct OpenFileArgs {
     pub line: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub column: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SplitOpenArgs {
+    pub path: String,
+    pub direction: SplitDirection,
+    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
+    pub line: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
+    pub column: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FocusSplitArgs {
+    pub direction: SplitDirection,
 }
 
 #[derive(Debug, Deserialize)]

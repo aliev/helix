@@ -12,8 +12,9 @@ use crate::{
     commands::typed,
     remote::{
         CurrentDocumentSnapshot, DiagnosticSnapshot, GetCurrentDocumentArgs, GetDiagnosticsArgs,
-        GetSelectionsArgs, GotoLocationArgs, IpcResponse, McpPresenceArgs, OpenDocumentSnapshot,
-        OpenFileArgs, RemoteCommand, SelectLinesArgs, SelectionSnapshot,
+        GetSelectionsArgs, GotoLocationArgs, IpcResponse, LayoutSnapshot, McpPresenceArgs,
+        OpenDocumentSnapshot, OpenFileArgs, RemoteCommand, SelectLinesArgs, SelectionSnapshot,
+        SplitDirection, SplitOpenArgs, FocusSplitArgs, ViewLayoutSnapshot,
     },
 };
 
@@ -33,6 +34,10 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
         },
         RemoteCommand::GetActiveContext => match serde_json::to_value(active_context_snapshot(editor)) {
             Ok(data) => IpcResponse::ok_with_data("active editor context", data),
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
+        RemoteCommand::GetLayout => match serde_json::to_value(layout_snapshot(editor)) {
+            Ok(data) => IpcResponse::ok_with_data("editor layout snapshot", data),
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::GetCurrentDocument => match parse_args::<GetCurrentDocumentArgs>(arguments) {
@@ -64,6 +69,24 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
                 Ok(message) => IpcResponse::ok(message),
                 Err(err) => IpcResponse::err(err.to_string()),
             },
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
+        RemoteCommand::SplitOpen => match parse_args::<SplitOpenArgs>(arguments) {
+            Ok(args) => match split_open(editor, args) {
+                Ok(message) => IpcResponse::ok(message),
+                Err(err) => IpcResponse::err(err.to_string()),
+            },
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
+        RemoteCommand::FocusSplit => match parse_args::<FocusSplitArgs>(arguments) {
+            Ok(args) => match focus_split(editor, args.direction) {
+                Ok(message) => IpcResponse::ok(message),
+                Err(err) => IpcResponse::err(err.to_string()),
+            },
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
+        RemoteCommand::CloseSplit => match close_split(editor) {
+            Ok(message) => IpcResponse::ok(message),
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::GotoLocation => match parse_args::<GotoLocationArgs>(arguments) {
@@ -105,6 +128,9 @@ pub fn notify_attention(command: RemoteCommand, message: &str) {
         command,
         RemoteCommand::ReloadAll
             | RemoteCommand::OpenFile
+            | RemoteCommand::SplitOpen
+            | RemoteCommand::FocusSplit
+            | RemoteCommand::CloseSplit
             | RemoteCommand::GotoLocation
             | RemoteCommand::SelectLines
     );
@@ -174,6 +200,45 @@ pub fn active_context_snapshot(editor: &Editor) -> serde_json::Value {
         "selections": selections,
         "diagnostics": diagnostics,
     })
+}
+
+pub fn layout_snapshot(editor: &Editor) -> LayoutSnapshot {
+    let focused_view_id = format!("{:?}", editor.tree.focus);
+    let views = editor
+        .tree
+        .views()
+        .map(|(view, is_focused)| {
+            let doc = editor.document(view.doc).expect("view document must exist");
+            ViewLayoutSnapshot {
+                view_id: format!("{:?}", view.id),
+                is_focused,
+                path: doc.path().map(|path| path.display().to_string()),
+                relative_path: doc
+                    .path()
+                    .map(|path| get_relative_path(path).display().to_string()),
+                x: view.area.x,
+                y: view.area.y,
+                width: view.area.width,
+                height: view.area.height,
+                position_hint: position_hint(view.area.x, view.area.y),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    LayoutSnapshot {
+        split_count: views.len(),
+        focused_view_id,
+        views,
+    }
+}
+
+fn position_hint(x: u16, y: u16) -> String {
+    match (x, y) {
+        (0, 0) => "top-left".to_string(),
+        (_, 0) => "top".to_string(),
+        (0, _) => "left".to_string(),
+        _ => "inner".to_string(),
+    }
 }
 
 pub fn open_documents_snapshot(editor: &Editor) -> Vec<OpenDocumentSnapshot> {
@@ -268,6 +333,50 @@ pub fn goto_location(editor: &mut Editor, args: GotoLocationArgs) -> anyhow::Res
     ))
 }
 
+pub fn split_open(editor: &mut Editor, args: SplitOpenArgs) -> anyhow::Result<String> {
+    let path = resolve_path(&args.path);
+    let action = match args.direction {
+        SplitDirection::Left | SplitDirection::Right => helix_view::editor::Action::VerticalSplit,
+        SplitDirection::Up | SplitDirection::Down => helix_view::editor::Action::HorizontalSplit,
+    };
+
+    editor
+        .open(&path, action)
+        .map_err(|err| anyhow::anyhow!("failed to open file {}: {err}", path.display()))?;
+
+    if matches!(args.direction, SplitDirection::Left | SplitDirection::Up) {
+        editor.swap_split_in_direction(args.direction.focus_direction());
+    }
+
+    if args.line.is_some() || args.column.is_some() {
+        goto_current_position(editor, args.line.unwrap_or(1), args.column.unwrap_or(1))?;
+    }
+
+    Ok(format!(
+        "opened {} in {} split",
+        path.display(),
+        direction_name(args.direction)
+    ))
+}
+
+pub fn focus_split(editor: &mut Editor, direction: SplitDirection) -> anyhow::Result<String> {
+    let before = editor.tree.focus;
+    editor.focus_direction(direction.focus_direction());
+    anyhow::ensure!(
+        editor.tree.focus != before,
+        "no split exists in the {} direction",
+        direction_name(direction)
+    );
+    Ok(format!("focused {} split", direction_name(direction)))
+}
+
+pub fn close_split(editor: &mut Editor) -> anyhow::Result<String> {
+    anyhow::ensure!(editor.tree.views().count() > 1, "cannot close the only split");
+    let view_id = editor.tree.focus;
+    editor.close(view_id);
+    Ok("closed current split".to_string())
+}
+
 pub fn select_lines(editor: &mut Editor, args: SelectLinesArgs) -> anyhow::Result<String> {
     let start_line = args
         .resolved_start_line()
@@ -327,6 +436,15 @@ fn resolve_path(path: &str) -> PathBuf {
         path
     } else {
         helix_stdx::env::current_working_dir().join(path)
+    }
+}
+
+fn direction_name(direction: SplitDirection) -> &'static str {
+    match direction {
+        SplitDirection::Left => "left",
+        SplitDirection::Right => "right",
+        SplitDirection::Up => "up",
+        SplitDirection::Down => "down",
     }
 }
 

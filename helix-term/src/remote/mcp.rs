@@ -137,6 +137,15 @@ async fn handle_message(
                             }),
                         ),
                         tool(
+                            "get_layout",
+                            "Read the current Helix layout: number of visible views, which view is focused, and which document is open in each visible split. Includes view coordinates and sizes so you can tell which split is left, right, top, or bottom.",
+                            json!({
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": false
+                            }),
+                        ),
+                        tool(
                             "reload_all",
                             "Reload every open document from disk in the running Helix session. Call this after external file edits so Helix reflects on-disk changes.",
                             json!({
@@ -165,6 +174,42 @@ async fn handle_message(
                                     "column": { "type": "integer", "minimum": 1 }
                                 },
                                 "required": ["path"],
+                                "additionalProperties": false
+                            }),
+                        ),
+                        tool(
+                            "split_open",
+                            "Open a file in a new split relative to the current one. Use direction left, right, up, or down to control where the new split appears.",
+                            json!({
+                                "type": "object",
+                                "properties": {
+                                    "path": { "type": "string" },
+                                    "direction": { "type": "string", "enum": ["left", "right", "up", "down"] },
+                                    "line": { "type": "integer", "minimum": 1 },
+                                    "column": { "type": "integer", "minimum": 1 }
+                                },
+                                "required": ["path", "direction"],
+                                "additionalProperties": false
+                            }),
+                        ),
+                        tool(
+                            "focus_split",
+                            "Move focus to an adjacent split in the given direction: left, right, up, or down.",
+                            json!({
+                                "type": "object",
+                                "properties": {
+                                    "direction": { "type": "string", "enum": ["left", "right", "up", "down"] }
+                                },
+                                "required": ["direction"],
+                                "additionalProperties": false
+                            }),
+                        ),
+                        tool(
+                            "close_split",
+                            "Close the currently focused split. Fails if there is only one split open.",
+                            json!({
+                                "type": "object",
+                                "properties": {},
                                 "additionalProperties": false
                             }),
                         ),
@@ -228,11 +273,15 @@ async fn handle_message(
 
             let remote = match params.name.as_str() {
                 "get_active_context" => RemoteCommand::GetActiveContext,
+                "get_layout" => RemoteCommand::GetLayout,
                 "reload_all" => RemoteCommand::ReloadAll,
                 "get_current_document" => RemoteCommand::GetCurrentDocument,
                 "get_open_documents" => RemoteCommand::GetOpenDocuments,
                 "get_selections" => RemoteCommand::GetSelections,
                 "open_file" => RemoteCommand::OpenFile,
+                "split_open" => RemoteCommand::SplitOpen,
+                "focus_split" => RemoteCommand::FocusSplit,
+                "close_split" => RemoteCommand::CloseSplit,
                 "goto_location" => RemoteCommand::GotoLocation,
                 "select_lines" => RemoteCommand::SelectLines,
                 "get_diagnostics" => RemoteCommand::GetDiagnostics,

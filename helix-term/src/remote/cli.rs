@@ -22,11 +22,15 @@ pub fn is_supported_remote_command(command: &str) -> bool {
     matches!(
         command,
         "get-active-context"
+            | "get-layout"
             | "reload-all"
             | "get-current-document"
             | "get-open-documents"
             | "get-selections"
             | "open-file"
+            | "split-open"
+            | "focus-split"
+            | "close-split"
             | "goto-location"
             | "select-lines"
             | "get-diagnostics"

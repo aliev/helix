@@ -10,10 +10,14 @@ use tokio::sync::{mpsc, oneshot};
 pub enum RemoteCommand {
     ReloadAll,
     GetActiveContext,
+    GetLayout,
     GetCurrentDocument,
     GetOpenDocuments,
     GetSelections,
     OpenFile,
+    SplitOpen,
+    FocusSplit,
+    CloseSplit,
     GotoLocation,
     SelectLines,
     GetDiagnostics,
@@ -25,10 +29,14 @@ impl RemoteCommand {
         match command {
             "reload-all" => Ok(Self::ReloadAll),
             "get-active-context" => Ok(Self::GetActiveContext),
+            "get-layout" => Ok(Self::GetLayout),
             "get-current-document" => Ok(Self::GetCurrentDocument),
             "get-open-documents" => Ok(Self::GetOpenDocuments),
             "get-selections" => Ok(Self::GetSelections),
             "open-file" => Ok(Self::OpenFile),
+            "split-open" => Ok(Self::SplitOpen),
+            "focus-split" => Ok(Self::FocusSplit),
+            "close-split" => Ok(Self::CloseSplit),
             "goto-location" => Ok(Self::GotoLocation),
             "select-lines" => Ok(Self::SelectLines),
             "get-diagnostics" => Ok(Self::GetDiagnostics),
@@ -41,10 +49,14 @@ impl RemoteCommand {
         match self {
             Self::ReloadAll => "reload-all",
             Self::GetActiveContext => "get-active-context",
+            Self::GetLayout => "get-layout",
             Self::GetCurrentDocument => "get-current-document",
             Self::GetOpenDocuments => "get-open-documents",
             Self::GetSelections => "get-selections",
             Self::OpenFile => "open-file",
+            Self::SplitOpen => "split-open",
+            Self::FocusSplit => "focus-split",
+            Self::CloseSplit => "close-split",
             Self::GotoLocation => "goto-location",
             Self::SelectLines => "select-lines",
             Self::GetDiagnostics => "get-diagnostics",
@@ -146,6 +158,26 @@ pub struct OpenDocumentSnapshot {
     pub modified: bool,
     pub is_current: bool,
     pub line_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ViewLayoutSnapshot {
+    pub view_id: String,
+    pub is_focused: bool,
+    pub path: Option<String>,
+    pub relative_path: Option<String>,
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub position_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutSnapshot {
+    pub split_count: usize,
+    pub focused_view_id: String,
+    pub views: Vec<ViewLayoutSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
