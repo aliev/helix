@@ -1,6 +1,6 @@
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::Stream;
-use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Position, Range, Selection};
+use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Range, Selection};
 use helix_lsp::{
     lsp::{self, notification::Notification},
     util::lsp_range_to_range,
@@ -21,25 +21,19 @@ use tui::backend::Backend;
 
 use crate::{
     args::Args,
-    commands::typed,
     compositor::{Compositor, Event},
     config::Config,
     handlers,
-    ipc::{
-        CurrentDocumentSnapshot, DiagnosticSnapshot, IpcRequest, IpcResponse, IpcServer,
-        OpenDocumentSnapshot, RemoteCommand, SelectionSnapshot,
-    },
+    remote::{actions, IpcRequest, IpcServer},
     job::Jobs,
     keymap::Keymaps,
     ui::{self, overlay::overlaid},
 };
 
 use log::{debug, error, info, warn};
-use serde::Deserialize;
-use serde_json::Value;
 use std::{
-    io::{stdin, IsTerminal, Write},
-    path::{Path, PathBuf},
+    io::{stdin, IsTerminal},
+    path::Path,
     sync::Arc,
 };
 
@@ -260,7 +254,7 @@ impl Application {
         .context("build signal handler")?;
 
         let ipc = if let Some(path) = args.ipc_listen.clone() {
-            let ipc = crate::ipc::start_server(path)?;
+            let ipc = crate::remote::start_server(path)?;
             info!("listening for IPC commands on {}", ipc.path().display());
             Some(ipc)
         } else {
@@ -401,231 +395,13 @@ impl Application {
 
     async fn handle_ipc_request(&mut self, request: IpcRequest) {
         let command = request.command;
-        let arguments = request.arguments.clone();
-        let response = match command {
-            RemoteCommand::ReloadAll => match typed::reload_all_documents(&mut self.editor) {
-                Ok(reloaded) => {
-                    let message = format!("reloaded {reloaded} document(s)");
-                    self.editor.set_status(message.clone());
-                    IpcResponse::ok(message)
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    self.editor.set_error(message.clone());
-                    IpcResponse::err(message)
-                }
-            },
-            RemoteCommand::GetCurrentDocument => {
-                match serde_json::to_value(self.current_document_snapshot()) {
-                    Ok(data) => IpcResponse::ok_with_data("current document snapshot", data),
-                    Err(err) => IpcResponse::err(err.to_string()),
-                }
-            }
-            RemoteCommand::GetOpenDocuments => match serde_json::to_value(self.open_documents_snapshot()) {
-                Ok(data) => IpcResponse::ok_with_data("open document snapshots", data),
-                Err(err) => IpcResponse::err(err.to_string()),
-            },
-            RemoteCommand::GetSelections => {
-                let (view, doc) = current!(self.editor);
-                let selections =
-                    SelectionSnapshot::from_selection(doc.selection(view.id), doc.text().slice(..));
-                match serde_json::to_value(selections) {
-                    Ok(data) => IpcResponse::ok_with_data("selection snapshots", data),
-                    Err(err) => IpcResponse::err(err.to_string()),
-                }
-            }
-            RemoteCommand::OpenFile => match parse_ipc_arguments::<OpenFileArgs>(arguments) {
-                Ok(args) => match self.open_file_via_ipc(args) {
-                    Ok(message) => IpcResponse::ok(message),
-                    Err(err) => IpcResponse::err(err.to_string()),
-                },
-                Err(err) => IpcResponse::err(err.to_string()),
-            },
-            RemoteCommand::GotoLocation => match parse_ipc_arguments::<GotoLocationArgs>(arguments)
-            {
-                Ok(args) => match self.goto_location_via_ipc(args) {
-                    Ok(message) => IpcResponse::ok(message),
-                    Err(err) => IpcResponse::err(err.to_string()),
-                },
-                Err(err) => IpcResponse::err(err.to_string()),
-            },
-            RemoteCommand::SelectLines => match parse_ipc_arguments::<SelectLinesArgs>(arguments) {
-                Ok(args) => match self.select_lines_via_ipc(args) {
-                    Ok(message) => IpcResponse::ok(message),
-                    Err(err) => IpcResponse::err(err.to_string()),
-                },
-                Err(err) => IpcResponse::err(err.to_string()),
-            },
-            RemoteCommand::GetDiagnostics => {
-                match serde_json::to_value(self.current_diagnostics_snapshot()) {
-                    Ok(data) => IpcResponse::ok_with_data("current diagnostics snapshot", data),
-                    Err(err) => IpcResponse::err(err.to_string()),
-                }
-            }
-        };
+        let response = actions::handle(&mut self.editor, command, request.arguments.clone());
 
         if response.ok {
-            self.notify_remote_attention(command, &response.message);
+            actions::notify_attention(command, &response.message);
         }
 
         let _ = request.reply.send(response);
-    }
-
-    fn notify_remote_attention(&self, command: RemoteCommand, message: &str) {
-        let should_notify = matches!(
-            command,
-            RemoteCommand::ReloadAll
-                | RemoteCommand::OpenFile
-                | RemoteCommand::GotoLocation
-                | RemoteCommand::SelectLines
-        );
-        if !should_notify {
-            return;
-        }
-
-        let mut title = format!("Helix remote: {message}");
-        title.retain(|ch| !matches!(ch, '\x07' | '\x1b' | '\n' | '\r'));
-        if title.is_empty() {
-            return;
-        }
-
-        let _ = std::io::stdout()
-            .lock()
-            .write_all(format!("\x1b]9;{title}\x1b\\").as_bytes());
-        let _ = std::io::stdout().lock().flush();
-    }
-
-    fn current_document_snapshot(&self) -> CurrentDocumentSnapshot {
-        let (view, doc) = current_ref!(self.editor);
-        let text = doc.text().slice(..);
-        let primary_selection_text = doc
-            .selection(view.id)
-            .primary()
-            .fragment(text)
-            .to_string();
-
-        CurrentDocumentSnapshot {
-            path: doc.path().map(|path| path.display().to_string()),
-            relative_path: doc
-                .path()
-                .map(|path| get_relative_path(path).display().to_string()),
-            language: doc.language_name().map(ToOwned::to_owned),
-            modified: doc.is_modified(),
-            line_count: text.len_lines(),
-            selections: SelectionSnapshot::from_selection(doc.selection(view.id), text),
-            primary_selection_text,
-            text: text.to_string(),
-        }
-    }
-
-    fn open_documents_snapshot(&self) -> Vec<OpenDocumentSnapshot> {
-        let current_id = view!(self.editor).doc;
-
-        self.editor
-            .documents()
-            .map(|doc| OpenDocumentSnapshot {
-                path: doc.path().map(|path| path.display().to_string()),
-                relative_path: doc
-                    .path()
-                    .map(|path| get_relative_path(path).display().to_string()),
-                modified: doc.is_modified(),
-                is_current: doc.id() == current_id,
-                line_count: doc.text().len_lines(),
-            })
-            .collect()
-    }
-
-    fn current_diagnostics_snapshot(&self) -> Vec<DiagnosticSnapshot> {
-        let (_view, doc) = current_ref!(self.editor);
-        let text = doc.text().slice(..);
-
-        doc.diagnostics()
-            .iter()
-            .map(|diagnostic| DiagnosticSnapshot {
-                path: doc.path().map(|path| path.display().to_string()),
-                line: text.char_to_line(diagnostic.range.start) + 1,
-                end_line: text.char_to_line(diagnostic.range.end) + 1,
-                message: diagnostic.message.clone(),
-                severity: diagnostic
-                    .severity
-                    .map(|severity| format!("{severity:?}").to_lowercase()),
-                source: diagnostic.source.clone(),
-            })
-            .collect()
-    }
-
-    fn open_file_via_ipc(&mut self, args: OpenFileArgs) -> anyhow::Result<String> {
-        let path = resolve_ipc_path(&args.path);
-        self.editor
-            .open(&path, helix_view::editor::Action::Replace)
-            .map_err(|err| anyhow::anyhow!("failed to open file {}: {err}", path.display()))?;
-
-        if args.line.is_some() || args.column.is_some() {
-            self.goto_current_position(args.line.unwrap_or(1), args.column.unwrap_or(1))?;
-        }
-
-        Ok(format!("opened {}", path.display()))
-    }
-
-    fn goto_location_via_ipc(&mut self, args: GotoLocationArgs) -> anyhow::Result<String> {
-        if let Some(path) = args.path {
-            self.open_file_via_ipc(OpenFileArgs {
-                path,
-                line: None,
-                column: None,
-            })?;
-        }
-
-        self.goto_current_position(args.line, args.column.unwrap_or(1))?;
-        Ok(format!(
-            "moved cursor to {}:{}",
-            args.line,
-            args.column.unwrap_or(1)
-        ))
-    }
-
-    fn goto_current_position(&mut self, line: usize, column: usize) -> anyhow::Result<()> {
-        anyhow::ensure!(line > 0, "line must be greater than 0");
-        anyhow::ensure!(column > 0, "column must be greater than 0");
-
-        let (view, doc) = current!(self.editor);
-        let coords = Position::new(line - 1, column - 1);
-        let pos = pos_at_coords(doc.text().slice(..), coords, true);
-        doc.set_selection(view.id, Selection::point(pos));
-        align_view(doc, view, Align::Center);
-        Ok(())
-    }
-
-    fn select_lines_via_ipc(&mut self, args: SelectLinesArgs) -> anyhow::Result<String> {
-        if let Some(path) = args.path {
-            self.open_file_via_ipc(OpenFileArgs {
-                path,
-                line: None,
-                column: None,
-            })?;
-        }
-
-        let start_line = args.start_line;
-        let end_line = args.end_line.unwrap_or(start_line);
-        anyhow::ensure!(start_line > 0, "start_line must be greater than 0");
-        anyhow::ensure!(end_line > 0, "end_line must be greater than 0");
-        anyhow::ensure!(end_line >= start_line, "end_line must be greater than or equal to start_line");
-
-        let (view, doc) = current!(self.editor);
-        let text = doc.text();
-        let len_lines = text.len_lines();
-        anyhow::ensure!(start_line <= len_lines, "start_line is past the end of the document");
-
-        let start = text.line_to_char(start_line - 1);
-        let end = text.line_to_char(end_line.min(len_lines));
-        doc.set_selection(view.id, Selection::single(start, end));
-        align_view(doc, view, Align::Center);
-
-        if start_line == end_line {
-            Ok(format!("selected line {start_line}"))
-        } else {
-            Ok(format!("selected lines {start_line}-{end_line}"))
-        }
     }
 
     pub fn handle_config_events(&mut self, config_event: ConfigEvent) {
@@ -1618,87 +1394,5 @@ impl ui::menu::Item for lsp::MessageActionItem {
     type Data = ();
     fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
         self.title.as_str().into()
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenFileArgs {
-    path: String,
-    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
-    line: Option<usize>,
-    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
-    column: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GotoLocationArgs {
-    path: Option<String>,
-    #[serde(deserialize_with = "deserialize_usizeish")]
-    line: usize,
-    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
-    column: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SelectLinesArgs {
-    path: Option<String>,
-    #[serde(deserialize_with = "deserialize_usizeish")]
-    start_line: usize,
-    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
-    end_line: Option<usize>,
-}
-
-fn parse_ipc_arguments<T>(arguments: Option<Value>) -> anyhow::Result<T>
-where
-    T: for<'de> Deserialize<'de>,
-{
-    serde_json::from_value(arguments.unwrap_or_else(|| Value::Object(Default::default())))
-        .map_err(Into::into)
-}
-
-fn resolve_ipc_path(path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        helix_stdx::env::current_working_dir().join(path)
-    }
-}
-
-fn deserialize_usizeish<'de, D>(deserializer: D) -> Result<usize, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Usizeish {
-        Number(usize),
-        String(String),
-    }
-
-    match Usizeish::deserialize(deserializer)? {
-        Usizeish::Number(value) => Ok(value),
-        Usizeish::String(value) => value.parse().map_err(serde::de::Error::custom),
-    }
-}
-
-fn deserialize_optional_usizeish<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OptionalUsizeish {
-        Number(usize),
-        String(String),
-        Null,
-    }
-
-    match OptionalUsizeish::deserialize(deserializer)? {
-        OptionalUsizeish::Number(value) => Ok(Some(value)),
-        OptionalUsizeish::String(value) => {
-            value.parse().map(Some).map_err(serde::de::Error::custom)
-        }
-        OptionalUsizeish::Null => Ok(None),
     }
 }

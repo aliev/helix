@@ -1,5 +1,8 @@
 use anyhow::Result;
 use helix_core::Position;
+use crate::remote::cli::{
+    default_socket_path, is_supported_remote_command, looks_like_socket_path,
+};
 use helix_view::tree::Layout;
 use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
@@ -96,7 +99,7 @@ impl Args {
                         Some(command) => command,
                         None => anyhow::bail!("--remote must be followed by a command"),
                     };
-                    if !RemoteCommandName::contains(&command) {
+                    if !is_supported_remote_command(&command) {
                         anyhow::bail!("unsupported remote command {}", command);
                     }
                     args.ipc_remote_command = Some(command);
@@ -169,7 +172,7 @@ impl Args {
             anyhow::bail!("--mcp and --listen cannot be used together");
         }
 
-        let default_socket = default_ipc_socket_path(args.working_directory.as_deref());
+        let default_socket = default_socket_path(args.working_directory.as_deref());
         if args.ipc_listen_enabled && args.ipc_listen.is_none() {
             args.ipc_listen = Some(default_socket.clone());
         }
@@ -181,61 +184,6 @@ impl Args {
         }
 
         Ok(args)
-    }
-}
-
-fn looks_like_socket_path(value: &str) -> bool {
-    value.ends_with(".sock")
-}
-
-fn default_ipc_socket_path(working_directory: Option<&Path>) -> PathBuf {
-    let base = working_directory
-        .map(Path::to_path_buf)
-        .unwrap_or_else(helix_stdx::env::current_working_dir);
-    let project_name = base
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(sanitize_socket_name)
-        .unwrap_or_else(|| "hx".to_string());
-
-    PathBuf::from("/tmp").join(format!("{project_name}.sock"))
-}
-
-fn sanitize_socket_name(name: &str) -> String {
-    let sanitized: String = name
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    if sanitized.is_empty() {
-        "hx".to_string()
-    } else {
-        sanitized
-    }
-}
-
-enum RemoteCommandName {}
-
-impl RemoteCommandName {
-    fn contains(command: &str) -> bool {
-        match command {
-            "reload-all"
-            | "get-current-document"
-            | "get-open-documents"
-            | "get-selections"
-            | "open-file"
-            | "goto-location"
-            | "select-lines"
-            | "get-diagnostics" => true,
-            _ => false,
-        }
     }
 }
 

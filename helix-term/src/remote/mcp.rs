@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
-use crate::ipc::RemoteCommand;
+use crate::remote::RemoteCommand;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
@@ -219,8 +219,8 @@ async fn handle_message(
                 }
             };
 
-            let response =
-                crate::ipc::send_command_with_args(socket_path, remote, params.arguments).await?;
+            let response = crate::remote::send_command_with_args(socket_path, remote, params.arguments)
+                .await?;
             let summary = if response.ok {
                 response.message.clone()
             } else {

@@ -3,7 +3,7 @@ use helix_loader::VERSION_AND_GIT_HASH;
 use helix_term::application::Application;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
-use helix_term::ipc::RemoteCommand;
+use helix_term::remote::RemoteCommand;
 
 fn setup_logging(verbosity: u64) -> Result<()> {
     let mut base_config = fern::Dispatch::new();
@@ -104,7 +104,7 @@ FLAGS:
             .ipc_remote_command
             .as_deref()
             .context("missing remote command")?;
-        let response = helix_term::ipc::send_command(socket_path, RemoteCommand::parse(command)?)
+        let response = helix_term::remote::send_command(socket_path, RemoteCommand::parse(command)?)
             .await
             .context("failed to send remote command")?;
         if response.ok {
@@ -117,7 +117,7 @@ FLAGS:
     }
 
     if let Some(socket_path) = args.mcp_socket.clone() {
-        return helix_term::mcp::run_stdio(socket_path).await;
+        return helix_term::remote::mcp::run_stdio(socket_path).await;
     }
 
     if args.health {
