@@ -517,6 +517,8 @@ impl MappableCommand {
         remove_primary_selection, "Remove primary selection",
         completion, "Invoke completion popup",
         hover, "Show docs for item under cursor",
+        git_hunk_preview, "Show sticky git hunk preview under cursor",
+        git_reset_hunk, "Reset git hunk under cursor",
         toggle_comments, "Comment/uncomment selections",
         toggle_line_comments, "Line comment/uncomment selections",
         toggle_block_comments, "Block comment/uncomment selections",
@@ -5826,6 +5828,31 @@ fn vsplit(cx: &mut Context) {
 
 fn vsplit_new(cx: &mut Context) {
     cx.editor.new_file(Action::VerticalSplit);
+}
+
+fn execute_typed_command(cx: &mut Context, name: &str) {
+    let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name) else {
+        cx.editor.set_error(format!("no such command: '{name}'"));
+        return;
+    };
+
+    let mut compositor_cx = compositor::Context {
+        editor: cx.editor,
+        jobs: cx.jobs,
+        scroll: None,
+    };
+    if let Err(err) = typed::execute_command(&mut compositor_cx, command, "", PromptEvent::Validate)
+    {
+        compositor_cx.editor.set_error(err.to_string());
+    }
+}
+
+fn git_hunk_preview(cx: &mut Context) {
+    execute_typed_command(cx, "git-hunk-preview");
+}
+
+fn git_reset_hunk(cx: &mut Context) {
+    execute_typed_command(cx, "git-reset-hunk");
 }
 
 fn wclose(cx: &mut Context) {

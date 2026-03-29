@@ -19,6 +19,8 @@ use helix_view::expansion;
 use serde_json::Value;
 use ui::completers::{self, Completer};
 
+pub(crate) const GIT_HUNK_PREVIEW_ID: &str = "git-hunk-preview";
+
 #[derive(Clone)]
 pub struct TypableCommand {
     pub name: &'static str,
@@ -2935,6 +2937,28 @@ fn render_diff_hunk_markdown(
     rendered
 }
 
+fn git_hunk_preview_markdown(editor: &Editor) -> anyhow::Result<String> {
+    let (hunk_idx, total_hunks, hunk, diff_base, doc_text, _view_id) = current_diff_hunk(editor)?;
+    Ok(render_diff_hunk_markdown(
+        hunk_idx,
+        total_hunks,
+        hunk,
+        diff_base.slice(..),
+        doc_text.slice(..),
+    ))
+}
+
+pub(crate) fn refresh_git_hunk_preview(editor: &mut Editor, compositor: &mut Compositor) {
+    if let Ok(preview) = git_hunk_preview_markdown(editor) {
+        let contents = ui::Markdown::new(preview, editor.syn_loader.clone());
+        let popup = Popup::new(GIT_HUNK_PREVIEW_ID, contents)
+            .position(editor.cursor().0)
+            .position_bias(Open::Above)
+            .auto_close(false);
+        compositor.replace_or_push(GIT_HUNK_PREVIEW_ID, popup);
+    }
+}
+
 fn preview_diff_hunk(
     cx: &mut compositor::Context,
     _args: Args,
@@ -2944,29 +2968,19 @@ fn preview_diff_hunk(
         return Ok(());
     }
 
-    let (hunk_idx, total_hunks, hunk, diff_base, doc_text, _view_id) = current_diff_hunk(cx.editor)?;
-    let preview = render_diff_hunk_markdown(
-        hunk_idx,
-        total_hunks,
-        hunk,
-        diff_base.slice(..),
-        doc_text.slice(..),
-    );
-    let position = cx.editor.cursor().0;
+    git_hunk_preview_markdown(cx.editor)?;
 
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
-                let contents = ui::Markdown::new(preview, editor.syn_loader.clone());
-                let popup = Popup::new("git-hunk-preview", contents)
-                    .position(position)
-                    .auto_close(true);
-                compositor.replace_or_push("git-hunk-preview", popup);
+                refresh_git_hunk_preview(editor, compositor);
             },
         ));
         Ok(call)
     };
     cx.jobs.callback(callback);
+    cx.editor
+        .set_status("Opened sticky git hunk preview. Press Esc to close.");
 
     Ok(())
 }
