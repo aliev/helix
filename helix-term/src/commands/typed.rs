@@ -3214,6 +3214,15 @@ impl Component for GitHunkPopup {
                         }
                     },
                 ))),
+                KeyCode::Char('o') => compositor::EventResult::Consumed(Some(Box::new(
+                    |_compositor, cx| {
+                        if let Err(err) =
+                            yank_diff_hunk_original_lines(cx, Args::default(), PromptEvent::Validate)
+                        {
+                            cx.editor.set_error(err.to_string());
+                        }
+                    },
+                ))),
                 KeyCode::Char('r') => compositor::EventResult::Consumed(Some(Box::new(
                     |compositor, cx| {
                         compositor.remove(GIT_HUNK_PREVIEW_ID);
@@ -3290,7 +3299,7 @@ fn render_diff_hunk_markdown(
     let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
     let _ = writeln!(
         rendered,
-        "`]g` next, `[g` previous, `y` copy hunk, `r` reset hunk, `Esc` close\n"
+        "`]g` next, `[g` previous, `y` copy hunk, `o` copy old, `r` reset hunk, `Esc` close\n"
     );
     let _ = writeln!(
         rendered,
@@ -3349,6 +3358,30 @@ fn yank_diff_hunk(
 
     cx.editor.registers.write('+', vec![patch])?;
     cx.editor.set_status("Copied current diff hunk to system clipboard");
+    Ok(())
+}
+
+fn yank_diff_hunk_original_lines(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (_hunk_idx, _total_hunks, hunk, diff_base, _doc_text, _view_id) = current_diff_hunk(cx.editor)?;
+    anyhow::ensure!(hunk.before.len() > 0, "Current hunk has no original lines to copy");
+
+    let mut original = String::new();
+    let diff_base = diff_base.slice(..);
+    for line_idx in hunk.before.clone() {
+        original.push_str(&diff_base.line(line_idx as usize).to_string());
+    }
+
+    cx.editor.registers.write('+', vec![original])?;
+    cx.editor
+        .set_status("Copied original hunk lines to system clipboard");
     Ok(())
 }
 
