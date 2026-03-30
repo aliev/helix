@@ -3076,6 +3076,12 @@ impl GitConflictPopup {
                 Span::raw("   "),
                 Span::styled(line_range, hint_style),
                 Span::raw("   "),
+                Span::styled("n", shortcut_style),
+                Span::styled(" next", hint_style),
+                Span::raw("  "),
+                Span::styled("N", shortcut_style),
+                Span::styled(" prev", hint_style),
+                Span::raw("  "),
                 Span::styled("o", shortcut_style),
                 Span::styled(" ours", hint_style),
                 Span::raw("  "),
@@ -3124,6 +3130,20 @@ impl Component for GitConflictPopup {
     ) -> compositor::EventResult {
         match event {
             compositor::Event::Key(key) => match key.code {
+                KeyCode::Char('n') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    if let Err(err) = goto_next_git_conflict(cx, Args::default(), PromptEvent::Validate) {
+                        cx.editor.set_error(err.to_string());
+                    } else {
+                        refresh_git_conflict_preview(cx.editor, compositor);
+                    }
+                }))),
+                KeyCode::Char('N') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    if let Err(err) = goto_prev_git_conflict(cx, Args::default(), PromptEvent::Validate) {
+                        cx.editor.set_error(err.to_string());
+                    } else {
+                        refresh_git_conflict_preview(cx.editor, compositor);
+                    }
+                }))),
                 KeyCode::Char('o') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
                     compositor.remove("git-conflict-preview");
                     if let Err(err) = resolve_git_conflict_ours(cx, Args::default(), PromptEvent::Validate) {
