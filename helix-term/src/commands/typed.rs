@@ -3128,18 +3128,24 @@ impl Component for GitConflictPopup {
                     compositor.remove("git-conflict-preview");
                     if let Err(err) = resolve_git_conflict_ours(cx, Args::default(), PromptEvent::Validate) {
                         cx.editor.set_error(err.to_string());
+                    } else {
+                        refresh_git_conflict_preview(cx.editor, compositor);
                     }
                 }))),
                 KeyCode::Char('t') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
                     compositor.remove("git-conflict-preview");
                     if let Err(err) = resolve_git_conflict_theirs(cx, Args::default(), PromptEvent::Validate) {
                         cx.editor.set_error(err.to_string());
+                    } else {
+                        refresh_git_conflict_preview(cx.editor, compositor);
                     }
                 }))),
                 KeyCode::Char('b') => compositor::EventResult::Consumed(Some(Box::new(|compositor, cx| {
                     compositor.remove("git-conflict-preview");
                     if let Err(err) = resolve_git_conflict_both(cx, Args::default(), PromptEvent::Validate) {
                         cx.editor.set_error(err.to_string());
+                    } else {
+                        refresh_git_conflict_preview(cx.editor, compositor);
                     }
                 }))),
                 _ => compositor::EventResult::Ignored(None),
