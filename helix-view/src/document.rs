@@ -69,8 +69,31 @@ const CONFLICT_START_MARKER: &str = "<<<<<<<";
 const CONFLICT_SEPARATOR_MARKER: &str = "=======";
 const CONFLICT_END_MARKER: &str = ">>>>>>>";
 
-fn line_starts_with(text: RopeSlice, line_idx: usize, prefix: &str) -> bool {
-    text.line(line_idx).to_string().starts_with(prefix)
+fn line_trimmed_text(text: RopeSlice, line_idx: usize) -> String {
+    text.line(line_idx)
+        .to_string()
+        .trim_end_matches(['\n', '\r'])
+        .to_owned()
+}
+
+fn is_conflict_start_line(text: RopeSlice, line_idx: usize) -> bool {
+    let line = line_trimmed_text(text, line_idx);
+    line == CONFLICT_START_MARKER
+        || line
+            .strip_prefix(CONFLICT_START_MARKER)
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
+fn is_conflict_separator_line(text: RopeSlice, line_idx: usize) -> bool {
+    line_trimmed_text(text, line_idx) == CONFLICT_SEPARATOR_MARKER
+}
+
+fn is_conflict_end_line(text: RopeSlice, line_idx: usize) -> bool {
+    let line = line_trimmed_text(text, line_idx);
+    line == CONFLICT_END_MARKER
+        || line
+            .strip_prefix(CONFLICT_END_MARKER)
+            .is_some_and(|rest| rest.starts_with(' '))
 }
 
 fn persistent_undo_path(path: &Path, configured_dir: Option<&Path>) -> PathBuf {
@@ -2335,11 +2358,11 @@ impl Document {
         let mut diagnostics = Vec::new();
 
         for line_idx in 0..text.len_lines() {
-            let message = if line_starts_with(text, line_idx, CONFLICT_START_MARKER) {
+            let message = if is_conflict_start_line(text, line_idx) {
                 Some("Merge conflict start")
-            } else if line_starts_with(text, line_idx, CONFLICT_SEPARATOR_MARKER) {
+            } else if is_conflict_separator_line(text, line_idx) {
                 Some("Merge conflict separator")
-            } else if line_starts_with(text, line_idx, CONFLICT_END_MARKER) {
+            } else if is_conflict_end_line(text, line_idx) {
                 Some("Merge conflict end")
             } else {
                 None

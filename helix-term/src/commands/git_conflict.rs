@@ -39,15 +39,39 @@ impl ConflictBlock {
     }
 }
 
-fn line_starts_with(text: RopeSlice, line_idx: usize, prefix: &str) -> bool {
-    text.line(line_idx).to_string().starts_with(prefix)
-}
-
 fn line_trimmed_text(text: RopeSlice, line_idx: usize) -> String {
     text.line(line_idx)
         .to_string()
         .trim_end_matches(['\n', '\r'])
         .to_owned()
+}
+
+fn is_conflict_start_line(text: RopeSlice, line_idx: usize) -> bool {
+    let line = line_trimmed_text(text, line_idx);
+    line == CONFLICT_START_MARKER
+        || line
+            .strip_prefix(CONFLICT_START_MARKER)
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
+fn is_conflict_base_line(text: RopeSlice, line_idx: usize) -> bool {
+    let line = line_trimmed_text(text, line_idx);
+    line == CONFLICT_BASE_MARKER
+        || line
+            .strip_prefix(CONFLICT_BASE_MARKER)
+            .is_some_and(|rest| rest.starts_with(' '))
+}
+
+fn is_conflict_separator_line(text: RopeSlice, line_idx: usize) -> bool {
+    line_trimmed_text(text, line_idx) == CONFLICT_SEPARATOR_MARKER
+}
+
+fn is_conflict_end_line(text: RopeSlice, line_idx: usize) -> bool {
+    let line = line_trimmed_text(text, line_idx);
+    line == CONFLICT_END_MARKER
+        || line
+            .strip_prefix(CONFLICT_END_MARKER)
+            .is_some_and(|rest| rest.starts_with(' '))
 }
 
 fn conflict_side_label(text: RopeSlice, line_idx: usize, marker: &str, fallback: &str) -> String {
@@ -64,7 +88,7 @@ fn parse_conflict_blocks(text: RopeSlice) -> Vec<ConflictBlock> {
     let mut line = 0;
 
     while line < text.len_lines() {
-        if !line_starts_with(text, line, CONFLICT_START_MARKER) {
+        if !is_conflict_start_line(text, line) {
             line += 1;
             continue;
         }
@@ -74,8 +98,8 @@ fn parse_conflict_blocks(text: RopeSlice) -> Vec<ConflictBlock> {
 
         let mut base_line = None;
         while line < text.len_lines()
-            && !line_starts_with(text, line, CONFLICT_BASE_MARKER)
-            && !line_starts_with(text, line, CONFLICT_SEPARATOR_MARKER)
+            && !is_conflict_base_line(text, line)
+            && !is_conflict_separator_line(text, line)
         {
             line += 1;
         }
@@ -83,12 +107,10 @@ fn parse_conflict_blocks(text: RopeSlice) -> Vec<ConflictBlock> {
             break;
         }
 
-        if line_starts_with(text, line, CONFLICT_BASE_MARKER) {
+        if is_conflict_base_line(text, line) {
             base_line = Some(line);
             line += 1;
-            while line < text.len_lines()
-                && !line_starts_with(text, line, CONFLICT_SEPARATOR_MARKER)
-            {
+            while line < text.len_lines() && !is_conflict_separator_line(text, line) {
                 line += 1;
             }
             if line >= text.len_lines() {
@@ -98,7 +120,7 @@ fn parse_conflict_blocks(text: RopeSlice) -> Vec<ConflictBlock> {
 
         let separator_line = line;
         line += 1;
-        while line < text.len_lines() && !line_starts_with(text, line, CONFLICT_END_MARKER) {
+        while line < text.len_lines() && !is_conflict_end_line(text, line) {
             line += 1;
         }
         if line >= text.len_lines() {
