@@ -1,4 +1,7 @@
 pub(crate) mod dap;
+pub(crate) mod git_blame;
+pub(crate) mod git_conflict;
+pub(crate) mod git_hunk;
 pub(crate) mod lsp;
 pub(crate) mod syntax;
 pub(crate) mod typed;
