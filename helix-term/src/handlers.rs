@@ -21,6 +21,7 @@ pub mod diagnostics;
 mod document_colors;
 mod document_highlight;
 mod document_links;
+mod git_commit;
 mod git_conflict_preview;
 mod git_hunk_preview;
 mod git_line_blame_preview;
@@ -61,6 +62,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     snippet::register_hooks(&handlers);
     document_colors::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
+    git_commit::register_hooks(&handlers);
     git_conflict_preview::register_hooks(&handlers);
     git_hunk_preview::register_hooks(&handlers);
     git_line_blame_preview::register_hooks(&handlers);
