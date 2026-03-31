@@ -76,6 +76,8 @@ FLAGS:
                                    (default: /tmp/<project-dir>-<path-hash>.sock)
     --remote [path.sock] <command> Send a remote-control command to a running Helix instance
                                    (default: /tmp/<project-dir>-<path-hash>.sock)
+                                   Additional command arguments use key=value syntax, for example:
+                                   hx --remote open-file path=src/main.rs line=10
     --mcp [path.sock]              Run an MCP stdio bridge connected to a Helix IPC socket
                                    (default: /tmp/<project-dir>-<path-hash>.sock)
     -V, --version                  Print version information
@@ -104,9 +106,13 @@ FLAGS:
             .ipc_remote_command
             .as_deref()
             .context("missing remote command")?;
-        let response = helix_term::remote::send_command(socket_path, RemoteCommand::parse(command)?)
-            .await
-            .context("failed to send remote command")?;
+        let response = helix_term::remote::send_command_with_args(
+            socket_path,
+            RemoteCommand::parse(command)?,
+            args.ipc_remote_arguments.clone(),
+        )
+        .await
+        .context("failed to send remote command")?;
         if response.ok {
             println!("{}", response.message);
             return Ok(0);

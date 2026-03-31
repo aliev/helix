@@ -3,6 +3,8 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
 };
+use serde_json::{Map, Value};
+use anyhow::{bail, Result};
 
 pub fn looks_like_socket_path(value: &str) -> bool {
     value.ends_with(".sock")
@@ -45,6 +47,30 @@ pub fn is_supported_remote_command(command: &str) -> bool {
     )
 }
 
+pub fn parse_remote_arguments(command: &str, raw_args: &[String]) -> Result<Option<Value>> {
+    if raw_args.is_empty() {
+        return Ok(None);
+    }
+
+    let mut object = Map::new();
+
+    if matches!(command, "open-file" | "split-open") && !raw_args[0].contains('=') {
+        object.insert("path".into(), Value::String(raw_args[0].clone()));
+        for arg in &raw_args[1..] {
+            let (key, value) = parse_remote_argument(arg)?;
+            object.insert(key, Value::String(value));
+        }
+        return Ok(Some(Value::Object(object)));
+    }
+
+    for arg in raw_args {
+        let (key, value) = parse_remote_argument(arg)?;
+        object.insert(key, Value::String(value));
+    }
+
+    Ok(Some(Value::Object(object)))
+}
+
 fn sanitize_socket_name(name: &str) -> String {
     let sanitized: String = name
         .chars()
@@ -62,4 +88,14 @@ fn sanitize_socket_name(name: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn parse_remote_argument(arg: &str) -> Result<(String, String)> {
+    let Some((key, value)) = arg.split_once('=') else {
+        bail!("remote argument '{arg}' must be in key=value form");
+    };
+    if key.is_empty() {
+        bail!("remote argument '{arg}' has an empty key");
+    }
+    Ok((key.to_string(), value.to_string()))
 }

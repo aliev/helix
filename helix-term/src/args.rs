@@ -1,10 +1,11 @@
 use anyhow::Result;
 use helix_core::Position;
 use crate::remote::cli::{
-    default_socket_path, is_supported_remote_command, looks_like_socket_path,
+    default_socket_path, is_supported_remote_command, looks_like_socket_path, parse_remote_arguments,
 };
 use helix_view::tree::Layout;
 use indexmap::IndexMap;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -27,6 +28,7 @@ pub struct Args {
     pub ipc_remote_enabled: bool,
     pub ipc_remote: Option<PathBuf>,
     pub ipc_remote_command: Option<String>,
+    pub ipc_remote_arguments: Option<Value>,
     pub mcp_enabled: bool,
     pub mcp_socket: Option<PathBuf>,
 }
@@ -102,6 +104,11 @@ impl Args {
                     if !is_supported_remote_command(&command) {
                         anyhow::bail!("unsupported remote command {}", command);
                     }
+                    let mut remote_args = Vec::new();
+                    while let Some(arg) = argv.next_if(|opt| !opt.starts_with('-')) {
+                        remote_args.push(arg);
+                    }
+                    args.ipc_remote_arguments = parse_remote_arguments(&command, &remote_args)?;
                     args.ipc_remote_command = Some(command);
                 }
                 "--mcp" => {
