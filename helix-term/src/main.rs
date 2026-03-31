@@ -73,11 +73,11 @@ FLAGS:
     --log <file>                   Specify a file to use for logging
                                    (default file: {})
     --listen [path.sock]           Listen for local remote-control commands on a unix socket
-                                   (default: /tmp/<project-dir>.sock)
+                                   (default: /tmp/<project-dir>-<path-hash>.sock)
     --remote [path.sock] <command> Send a remote-control command to a running Helix instance
-                                   (default: /tmp/<project-dir>.sock)
+                                   (default: /tmp/<project-dir>-<path-hash>.sock)
     --mcp [path.sock]              Run an MCP stdio bridge connected to a Helix IPC socket
-                                   (default: /tmp/<project-dir>.sock)
+                                   (default: /tmp/<project-dir>-<path-hash>.sock)
     -V, --version                  Print version information
     --vsplit                       Split all given files vertically into different windows
     --hsplit                       Split all given files horizontally into different windows

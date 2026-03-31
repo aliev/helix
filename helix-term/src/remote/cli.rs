@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+};
 
 pub fn looks_like_socket_path(value: &str) -> bool {
     value.ends_with(".sock")
@@ -8,14 +12,18 @@ pub fn default_socket_path(working_directory: Option<&Path>) -> PathBuf {
     let base = working_directory
         .map(Path::to_path_buf)
         .unwrap_or_else(helix_stdx::env::current_working_dir);
+    let canonical_base = helix_stdx::path::canonicalize(&base);
     let project_name = base
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .map(sanitize_socket_name)
         .unwrap_or_else(|| "hx".to_string());
+    let mut hasher = DefaultHasher::new();
+    canonical_base.hash(&mut hasher);
+    let hash = hasher.finish();
 
-    PathBuf::from("/tmp").join(format!("{project_name}.sock"))
+    PathBuf::from("/tmp").join(format!("{project_name}-{hash:016x}.sock"))
 }
 
 pub fn is_supported_remote_command(command: &str) -> bool {
