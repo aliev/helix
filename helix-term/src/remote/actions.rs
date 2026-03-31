@@ -87,7 +87,7 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::FocusSplit => match parse_args::<FocusSplitArgs>(arguments) {
-            Ok(args) => match focus_split(editor, args.direction) {
+            Ok(args) => match focus_split(editor, args) {
                 Ok(message) => IpcResponse::ok(message),
                 Err(err) => IpcResponse::err(err.to_string()),
             },
@@ -350,15 +350,27 @@ pub fn goto_location(editor: &mut Editor, args: GotoLocationArgs) -> anyhow::Res
 }
 
 pub fn split_open(editor: &mut Editor, args: SplitOpenArgs) -> anyhow::Result<String> {
-    let path = resolve_path(&args.path, args.cwd.as_deref());
     let action = match args.direction {
         SplitDirection::Left | SplitDirection::Right => helix_view::editor::Action::VerticalSplit,
         SplitDirection::Up | SplitDirection::Down => helix_view::editor::Action::HorizontalSplit,
     };
 
-    editor
-        .open(&path, action)
-        .map_err(|err| anyhow::anyhow!("failed to open file {}: {err}", path.display()))?;
+    let path = args.path.as_deref().filter(|path| !path.is_empty());
+    let message = if let Some(path) = path {
+        let path = resolve_path(path, args.cwd.as_deref());
+        editor
+            .open(&path, action)
+            .map_err(|err| anyhow::anyhow!("failed to open file {}: {err}", path.display()))?;
+        format!(
+            "opened {} in {} split",
+            path.display(),
+            direction_name(args.direction)
+        )
+    } else {
+        let doc_id = view!(editor).doc;
+        editor.switch(doc_id, action);
+        format!("split current buffer {}", direction_name(args.direction))
+    };
 
     if matches!(args.direction, SplitDirection::Left | SplitDirection::Up) {
         editor.swap_split_in_direction(args.direction.focus_direction());
@@ -368,14 +380,23 @@ pub fn split_open(editor: &mut Editor, args: SplitOpenArgs) -> anyhow::Result<St
         goto_current_position(editor, args.line.unwrap_or(1), args.column.unwrap_or(1))?;
     }
 
-    Ok(format!(
-        "opened {} in {} split",
-        path.display(),
-        direction_name(args.direction)
-    ))
+    Ok(message)
 }
 
-pub fn focus_split(editor: &mut Editor, direction: SplitDirection) -> anyhow::Result<String> {
+pub fn focus_split(editor: &mut Editor, args: FocusSplitArgs) -> anyhow::Result<String> {
+    if let Some(view_id) = args.view_id.as_deref() {
+        let target = editor
+            .tree
+            .views()
+            .find_map(|(view, _)| (format!("{:?}", view.id) == view_id).then_some(view.id))
+            .ok_or_else(|| anyhow::anyhow!("unknown view_id `{view_id}`"))?;
+        editor.focus(target);
+        return Ok(format!("focused split {view_id}"));
+    }
+
+    let direction = args
+        .direction
+        .ok_or_else(|| anyhow::anyhow!("missing field `direction` or `view_id`"))?;
     let before = editor.tree.focus;
     editor.focus_direction(direction.focus_direction());
     anyhow::ensure!(

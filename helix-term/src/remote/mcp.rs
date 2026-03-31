@@ -180,7 +180,7 @@ async fn handle_message(
                         ),
                         tool(
                             "split_open",
-                            "Open a file in a new split relative to the current one. Use direction left, right, up, or down to control where the new split appears. The aliases horizontal and vertical are also accepted. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
+                            "Open a file in a new split relative to the current one, or split the current buffer if `path` is omitted. Use direction left, right, up, or down to control where the new split appears. The aliases horizontal and vertical are also accepted. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
@@ -190,19 +190,19 @@ async fn handle_message(
                                     "line": { "type": "integer", "minimum": 1 },
                                     "column": { "type": "integer", "minimum": 1 }
                                 },
-                                "required": ["path", "direction"],
+                                "required": ["direction"],
                                 "additionalProperties": false
                             }),
                         ),
                         tool(
                             "focus_split",
-                            "Move focus to an adjacent split in the given direction: left, right, up, or down.",
+                            "Move focus to another split either by adjacent direction or by exact `view_id` from get_layout.",
                             json!({
                                 "type": "object",
                                 "properties": {
-                                    "direction": { "type": "string", "enum": ["left", "right", "up", "down"] }
+                                    "direction": { "type": "string", "enum": ["left", "right", "up", "down"] },
+                                    "view_id": { "type": "string" }
                                 },
-                                "required": ["direction"],
                                 "additionalProperties": false
                             }),
                         ),

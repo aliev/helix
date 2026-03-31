@@ -53,7 +53,7 @@ pub struct OpenFileArgs {
 
 #[derive(Debug, Deserialize)]
 pub struct SplitOpenArgs {
-    pub path: String,
+    pub path: Option<String>,
     pub cwd: Option<String>,
     pub direction: SplitDirection,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
@@ -64,7 +64,8 @@ pub struct SplitOpenArgs {
 
 #[derive(Debug, Deserialize)]
 pub struct FocusSplitArgs {
-    pub direction: SplitDirection,
+    pub direction: Option<SplitDirection>,
+    pub view_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
