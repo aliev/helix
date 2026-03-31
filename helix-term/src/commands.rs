@@ -5,6 +5,7 @@ pub(crate) mod git_hunk;
 pub(crate) mod lsp;
 pub(crate) mod syntax;
 pub(crate) mod typed;
+pub(crate) mod undo;
 
 pub use dap::*;
 use futures_util::FutureExt;
