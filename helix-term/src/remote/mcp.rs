@@ -165,11 +165,12 @@ async fn handle_message(
                         ),
                         tool(
                             "open_file",
-                            "Open a file in the active Helix view and optionally jump to a 1-based line and column. This replaces the current document in that view; it does not open multiple files at once.",
+                            "Open a file in the active Helix view and optionally jump to a 1-based line and column. This replaces the current document in that view; it does not open multiple files at once. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
+                                    "cwd": { "type": "string" },
                                     "line": { "type": "integer", "minimum": 1 },
                                     "column": { "type": "integer", "minimum": 1 }
                                 },
@@ -179,11 +180,12 @@ async fn handle_message(
                         ),
                         tool(
                             "split_open",
-                            "Open a file in a new split relative to the current one. Use direction left, right, up, or down to control where the new split appears. The aliases horizontal and vertical are also accepted.",
+                            "Open a file in a new split relative to the current one. Use direction left, right, up, or down to control where the new split appears. The aliases horizontal and vertical are also accepted. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
+                                    "cwd": { "type": "string" },
                                     "direction": { "type": "string", "enum": ["left", "right", "up", "down", "horizontal", "vertical"] },
                                     "line": { "type": "integer", "minimum": 1 },
                                     "column": { "type": "integer", "minimum": 1 }
@@ -215,11 +217,12 @@ async fn handle_message(
                         ),
                         tool(
                             "goto_location",
-                            "Move the cursor in the running Helix session to a 1-based line and optional column. If path is provided, open that file first.",
+                            "Move the cursor in the running Helix session to a 1-based line and optional column. If path is provided, open that file first. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
+                                    "cwd": { "type": "string" },
                                     "line": { "type": "integer", "minimum": 1 },
                                     "column": { "type": "integer", "minimum": 1 }
                                 },
@@ -229,11 +232,12 @@ async fn handle_message(
                         ),
                         tool(
                             "select_lines",
-                            "Select a 1-based inclusive line range in the running Helix session. If path is provided, open that file first. You can pass either `line` for a single line or `start_line` and optional `end_line` for a range.",
+                            "Select a 1-based inclusive line range in the running Helix session. If path is provided, open that file first. You can pass either `line` for a single line or `start_line` and optional `end_line` for a range. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
+                                    "cwd": { "type": "string" },
                                     "line": { "type": "integer", "minimum": 1 },
                                     "start_line": { "type": "integer", "minimum": 1 },
                                     "end_line": { "type": "integer", "minimum": 1 }
@@ -243,11 +247,12 @@ async fn handle_message(
                         ),
                         tool(
                             "get_diagnostics",
-                            "Read diagnostics for the active Helix document, or for `path` if that file is currently open in Helix. If files were edited outside Helix, call reload_all first.",
+                            "Read diagnostics for the active Helix document, or for `path` if that file is currently open in Helix. If files were edited outside Helix, call reload_all first. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
-                                    "path": { "type": "string" }
+                                    "path": { "type": "string" },
+                                    "cwd": { "type": "string" }
                                 },
                                 "additionalProperties": false
                             }),

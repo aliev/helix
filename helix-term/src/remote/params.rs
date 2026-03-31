@@ -44,6 +44,7 @@ impl<'de> Deserialize<'de> for SplitDirection {
 #[derive(Debug, Deserialize)]
 pub struct OpenFileArgs {
     pub path: String,
+    pub cwd: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub line: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
@@ -53,6 +54,7 @@ pub struct OpenFileArgs {
 #[derive(Debug, Deserialize)]
 pub struct SplitOpenArgs {
     pub path: String,
+    pub cwd: Option<String>,
     pub direction: SplitDirection,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub line: Option<usize>,
@@ -68,6 +70,7 @@ pub struct FocusSplitArgs {
 #[derive(Debug, Deserialize)]
 pub struct GotoLocationArgs {
     pub path: Option<String>,
+    pub cwd: Option<String>,
     #[serde(deserialize_with = "deserialize_usizeish")]
     pub line: usize,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
@@ -77,6 +80,7 @@ pub struct GotoLocationArgs {
 #[derive(Debug, Deserialize)]
 pub struct SelectLinesArgs {
     pub path: Option<String>,
+    pub cwd: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub line: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
@@ -100,16 +104,19 @@ pub struct McpPresenceArgs {
 #[derive(Debug, Deserialize)]
 pub struct GetDiagnosticsArgs {
     pub path: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct GetCurrentDocumentArgs {
     pub path: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct GetSelectionsArgs {
     pub path: Option<String>,
+    pub cwd: Option<String>,
 }
 
 fn deserialize_usizeish<'de, D>(deserializer: D) -> Result<usize, D::Error>

@@ -41,7 +41,11 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::GetCurrentDocument => match parse_args::<GetCurrentDocumentArgs>(arguments) {
-            Ok(args) => match current_document_snapshot(editor, args.path.as_deref()) {
+            Ok(args) => match current_document_snapshot(
+                editor,
+                args.path.as_deref(),
+                args.cwd.as_deref(),
+            ) {
                 Ok(snapshot) => match serde_json::to_value(snapshot) {
                     Ok(data) => IpcResponse::ok_with_data("current document snapshot", data),
                     Err(err) => IpcResponse::err(err.to_string()),
@@ -55,7 +59,11 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::GetSelections => match parse_args::<GetSelectionsArgs>(arguments) {
-            Ok(args) => match selections_snapshot(editor, args.path.as_deref()) {
+            Ok(args) => match selections_snapshot(
+                editor,
+                args.path.as_deref(),
+                args.cwd.as_deref(),
+            ) {
                 Ok(snapshot) => match serde_json::to_value(snapshot) {
                     Ok(data) => IpcResponse::ok_with_data("selection snapshots", data),
                     Err(err) => IpcResponse::err(err.to_string()),
@@ -104,7 +112,11 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
             Err(err) => IpcResponse::err(err.to_string()),
         },
         RemoteCommand::GetDiagnostics => match parse_args::<GetDiagnosticsArgs>(arguments) {
-            Ok(args) => match diagnostics_snapshot(editor, args.path.as_deref()) {
+            Ok(args) => match diagnostics_snapshot(
+                editor,
+                args.path.as_deref(),
+                args.cwd.as_deref(),
+            ) {
                 Ok(snapshot) => match serde_json::to_value(snapshot) {
                     Ok(data) => IpcResponse::ok_with_data("current diagnostics snapshot", data),
                     Err(err) => IpcResponse::err(err.to_string()),
@@ -153,8 +165,9 @@ pub fn notify_attention(command: RemoteCommand, message: &str) {
 pub fn current_document_snapshot(
     editor: &Editor,
     path: Option<&str>,
+    cwd: Option<&str>,
 ) -> anyhow::Result<CurrentDocumentSnapshot> {
-    let (view, doc) = find_target_document(editor, path)?;
+    let (view, doc) = find_target_document(editor, path, cwd)?;
     let text = doc.text().slice(..);
     let primary_selection_text = doc
         .selection(view.id)
@@ -196,7 +209,7 @@ pub fn active_context_snapshot(editor: &Editor) -> serde_json::Value {
         .collect();
 
     serde_json::json!({
-        "document": current_document_snapshot(editor, None).expect("current document is always available"),
+        "document": current_document_snapshot(editor, None, None).expect("current document is always available"),
         "selections": selections,
         "diagnostics": diagnostics,
     })
@@ -261,8 +274,9 @@ pub fn open_documents_snapshot(editor: &Editor) -> Vec<OpenDocumentSnapshot> {
 pub fn diagnostics_snapshot(
     editor: &Editor,
     path: Option<&str>,
+    cwd: Option<&str>,
 ) -> anyhow::Result<Vec<DiagnosticSnapshot>> {
-    let (_view, doc) = find_target_document(editor, path)?;
+    let (_view, doc) = find_target_document(editor, path, cwd)?;
     let text = doc.text().slice(..);
 
     Ok(doc
@@ -284,8 +298,9 @@ pub fn diagnostics_snapshot(
 pub fn selections_snapshot(
     editor: &Editor,
     path: Option<&str>,
+    cwd: Option<&str>,
 ) -> anyhow::Result<Vec<SelectionSnapshot>> {
-    let (view, doc) = find_target_document(editor, path)?;
+    let (view, doc) = find_target_document(editor, path, cwd)?;
     Ok(SelectionSnapshot::from_selection(
         doc.selection(view.id),
         doc.text().slice(..),
@@ -301,7 +316,7 @@ where
 }
 
 pub fn open_file(editor: &mut Editor, args: OpenFileArgs) -> anyhow::Result<String> {
-    let path = resolve_path(&args.path);
+    let path = resolve_path(&args.path, args.cwd.as_deref());
     editor
         .open(&path, helix_view::editor::Action::Replace)
         .map_err(|err| anyhow::anyhow!("failed to open file {}: {err}", path.display()))?;
@@ -319,6 +334,7 @@ pub fn goto_location(editor: &mut Editor, args: GotoLocationArgs) -> anyhow::Res
             editor,
             OpenFileArgs {
                 path,
+                cwd: args.cwd,
                 line: None,
                 column: None,
             },
@@ -334,7 +350,7 @@ pub fn goto_location(editor: &mut Editor, args: GotoLocationArgs) -> anyhow::Res
 }
 
 pub fn split_open(editor: &mut Editor, args: SplitOpenArgs) -> anyhow::Result<String> {
-    let path = resolve_path(&args.path);
+    let path = resolve_path(&args.path, args.cwd.as_deref());
     let action = match args.direction {
         SplitDirection::Left | SplitDirection::Right => helix_view::editor::Action::VerticalSplit,
         SplitDirection::Up | SplitDirection::Down => helix_view::editor::Action::HorizontalSplit,
@@ -388,6 +404,7 @@ pub fn select_lines(editor: &mut Editor, args: SelectLinesArgs) -> anyhow::Resul
             editor,
             OpenFileArgs {
                 path,
+                cwd: args.cwd,
                 line: None,
                 column: None,
             },
@@ -430,13 +447,29 @@ fn goto_current_position(editor: &mut Editor, line: usize, column: usize) -> any
     Ok(())
 }
 
-fn resolve_path(path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
+fn resolve_path(path: &str, cwd: Option<&str>) -> PathBuf {
+    let path = expand_user_path(PathBuf::from(path));
     if path.is_absolute() {
         path
     } else {
-        helix_stdx::env::current_working_dir().join(path)
+        cwd.map(|cwd| expand_user_path(PathBuf::from(cwd)))
+            .unwrap_or_else(helix_stdx::env::current_working_dir)
+            .join(path)
     }
+}
+
+fn expand_user_path(path: PathBuf) -> PathBuf {
+    if path == PathBuf::from("~") {
+        return std::env::var_os("HOME").map(PathBuf::from).unwrap_or(path);
+    }
+
+    if let Ok(stripped) = path.strip_prefix("~") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+
+    path
 }
 
 fn direction_name(direction: SplitDirection) -> &'static str {
@@ -451,8 +484,9 @@ fn direction_name(direction: SplitDirection) -> &'static str {
 fn find_target_document<'a>(
     editor: &'a Editor,
     path: Option<&str>,
+    cwd: Option<&str>,
 ) -> anyhow::Result<(&'a helix_view::View, &'a helix_view::Document)> {
-    match path.map(resolve_path) {
+    match path.map(|path| resolve_path(path, cwd)) {
         Some(resolved) => {
             let doc = editor
                 .documents()
