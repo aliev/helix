@@ -155,7 +155,7 @@ fn render_diff_hunk_markdown(
     let _ = writeln!(rendered, "### Git Hunk {}/{}", hunk_idx + 1, total_hunks);
     let _ = writeln!(
         rendered,
-        "`]g` next, `[g` previous, `y` copy hunk, `o` copy old, `r` reset hunk, `Esc` close\n"
+        "`[g` previous, `]g` next, `y` copy hunk, `o` copy old, `r` reset hunk, `Esc` close\n"
     );
     let _ = writeln!(
         rendered,
