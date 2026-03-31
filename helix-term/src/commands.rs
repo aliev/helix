@@ -524,6 +524,7 @@ impl MappableCommand {
         git_conflict_theirs, "Resolve merge conflict with theirs",
         git_conflict_both, "Resolve merge conflict with both sides",
         git_hunk_preview, "Show sticky git hunk preview under cursor",
+        git_line_blame, "Show git blame popup for current line",
         git_reset_hunk, "Reset git hunk under cursor",
         git_yank_hunk, "Copy git hunk under cursor to clipboard",
         copy_git_file_location, "Copy git permalink with selected line range to clipboard",
@@ -5858,6 +5859,10 @@ fn execute_typed_command(cx: &mut Context, name: &str) {
 
 fn git_hunk_preview(cx: &mut Context) {
     execute_typed_command(cx, "git-hunk-preview");
+}
+
+fn git_line_blame(cx: &mut Context) {
+    execute_typed_command(cx, "git-line-blame");
 }
 
 fn git_conflict_preview(cx: &mut Context) {

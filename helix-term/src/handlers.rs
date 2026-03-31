@@ -23,6 +23,7 @@ mod document_highlight;
 mod document_links;
 mod git_conflict_preview;
 mod git_hunk_preview;
+mod git_line_blame_preview;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -62,6 +63,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     document_links::register_hooks(&handlers);
     git_conflict_preview::register_hooks(&handlers);
     git_hunk_preview::register_hooks(&handlers);
+    git_line_blame_preview::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);
     handlers

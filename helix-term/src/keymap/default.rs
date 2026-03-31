@@ -236,6 +236,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "D" => workspace_diagnostics_picker,
             "g" => { "Git"
                 "g" => changed_file_picker,
+                "b" => git_line_blame,
                 "c" => git_conflict_preview,
                 "l" => copy_git_file_location,
                 "p" => git_hunk_preview,
