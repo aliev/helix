@@ -85,15 +85,30 @@ pub struct SelectLinesArgs {
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub line: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
+    pub start: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub start_line: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
+    pub end: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_optional_usizeish")]
     pub end_line: Option<usize>,
 }
 
 impl SelectLinesArgs {
     pub fn resolved_start_line(&self) -> Option<usize> {
-        self.start_line.or(self.line)
+        self.start_line.or(self.start).or(self.line)
     }
+
+    pub fn resolved_end_line(&self) -> Option<usize> {
+        self.end_line.or(self.end)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplaceSelectionArgs {
+    pub text: String,
+    pub path: Option<String>,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

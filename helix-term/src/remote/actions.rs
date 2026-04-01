@@ -1,4 +1,4 @@
-use helix_core::{pos_at_coords, Position, Selection};
+use helix_core::{pos_at_coords, Position, Selection, Tendril, Transaction};
 use helix_stdx::path::get_relative_path;
 use helix_view::{align_view, Align, Editor};
 use serde::Deserialize;
@@ -14,7 +14,7 @@ use crate::{
         CurrentDocumentSnapshot, DiagnosticSnapshot, GetCurrentDocumentArgs, GetDiagnosticsArgs,
         GetSelectionsArgs, GotoLocationArgs, IpcResponse, LayoutSnapshot, McpPresenceArgs,
         OpenDocumentSnapshot, OpenFileArgs, RemoteCommand, SelectLinesArgs, SelectionSnapshot,
-        SplitDirection, SplitOpenArgs, FocusSplitArgs, ViewLayoutSnapshot,
+        SplitDirection, SplitOpenArgs, FocusSplitArgs, ReplaceSelectionArgs, ViewLayoutSnapshot,
     },
 };
 
@@ -111,6 +111,13 @@ pub fn handle(editor: &mut Editor, command: RemoteCommand, arguments: Option<Val
             },
             Err(err) => IpcResponse::err(err.to_string()),
         },
+        RemoteCommand::ReplaceSelection => match parse_args::<ReplaceSelectionArgs>(arguments) {
+            Ok(args) => match replace_selection(editor, args) {
+                Ok(message) => IpcResponse::ok(message),
+                Err(err) => IpcResponse::err(err.to_string()),
+            },
+            Err(err) => IpcResponse::err(err.to_string()),
+        },
         RemoteCommand::GetDiagnostics => match parse_args::<GetDiagnosticsArgs>(arguments) {
             Ok(args) => match diagnostics_snapshot(
                 editor,
@@ -145,6 +152,7 @@ pub fn notify_attention(command: RemoteCommand, message: &str) {
             | RemoteCommand::CloseSplit
             | RemoteCommand::GotoLocation
             | RemoteCommand::SelectLines
+            | RemoteCommand::ReplaceSelection
     );
     if !should_notify {
         return;
@@ -417,8 +425,8 @@ pub fn close_split(editor: &mut Editor) -> anyhow::Result<String> {
 pub fn select_lines(editor: &mut Editor, args: SelectLinesArgs) -> anyhow::Result<String> {
     let start_line = args
         .resolved_start_line()
-        .ok_or_else(|| anyhow::anyhow!("missing field `start_line` or `line`"))?;
-    let end_line = args.end_line.unwrap_or(start_line);
+        .ok_or_else(|| anyhow::anyhow!("missing field `start_line`, `start`, or `line`"))?;
+    let end_line = args.resolved_end_line().unwrap_or(start_line);
 
     if let Some(path) = args.path {
         open_file(
@@ -454,6 +462,40 @@ pub fn select_lines(editor: &mut Editor, args: SelectLinesArgs) -> anyhow::Resul
     } else {
         Ok(format!("selected lines {start_line}-{end_line}"))
     }
+}
+
+pub fn replace_selection(editor: &mut Editor, args: ReplaceSelectionArgs) -> anyhow::Result<String> {
+    if let Some(path) = args.path {
+        open_file(
+            editor,
+            OpenFileArgs {
+                path,
+                cwd: args.cwd,
+                line: None,
+                column: None,
+            },
+        )?;
+    }
+
+    let scrolloff = editor.config().scrolloff;
+    let (view, doc) = current!(editor);
+    let selection = doc.selection(view.id);
+    let primary = selection.primary();
+    let start = primary.from();
+    let end = primary.to();
+    let inserted: Tendril = args.text.into();
+    let cursor = start + inserted.chars().count();
+    let transaction = Transaction::change(
+        doc.text(),
+        vec![(start, end, Some(inserted))].into_iter(),
+    )
+    .with_selection(Selection::single(cursor, cursor));
+
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    view.ensure_cursor_in_view(doc, scrolloff);
+
+    Ok("replaced primary selection".to_string())
 }
 
 fn goto_current_position(editor: &mut Editor, line: usize, column: usize) -> anyhow::Result<()> {

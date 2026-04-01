@@ -232,16 +232,32 @@ async fn handle_message(
                         ),
                         tool(
                             "select_lines",
-                            "Select a 1-based inclusive line range in the running Helix session. If path is provided, open that file first. You can pass either `line` for a single line or `start_line` and optional `end_line` for a range. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
+                            "Select a 1-based inclusive line range in the running Helix session. If path is provided, open that file first. You can pass either `line` for a single line or `start_line`/`end_line` for a range. The aliases `start` and `end` are also accepted. `path` may be absolute or relative; use `cwd` to resolve a relative path against another project.",
                             json!({
                                 "type": "object",
                                 "properties": {
                                     "path": { "type": "string" },
                                     "cwd": { "type": "string" },
                                     "line": { "type": "integer", "minimum": 1 },
+                                    "start": { "type": "integer", "minimum": 1 },
                                     "start_line": { "type": "integer", "minimum": 1 },
+                                    "end": { "type": "integer", "minimum": 1 },
                                     "end_line": { "type": "integer", "minimum": 1 }
                                 },
+                                "additionalProperties": false
+                            }),
+                        ),
+                        tool(
+                            "replace_selection",
+                            "Replace the current primary selection with `text`, or insert `text` at the cursor if the selection is empty. If `path` is provided, open that file first. This is useful for editor-aware small edits, commit messages, and ping-pong workflows.",
+                            json!({
+                                "type": "object",
+                                "properties": {
+                                    "text": { "type": "string" },
+                                    "path": { "type": "string" },
+                                    "cwd": { "type": "string" }
+                                },
+                                "required": ["text"],
                                 "additionalProperties": false
                             }),
                         ),
@@ -289,6 +305,7 @@ async fn handle_message(
                 "close_split" => RemoteCommand::CloseSplit,
                 "goto_location" => RemoteCommand::GotoLocation,
                 "select_lines" => RemoteCommand::SelectLines,
+                "replace_selection" => RemoteCommand::ReplaceSelection,
                 "get_diagnostics" => RemoteCommand::GetDiagnostics,
                 _ => {
                     return Ok(Some(jsonrpc_error(

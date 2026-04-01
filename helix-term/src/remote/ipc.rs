@@ -20,6 +20,7 @@ pub enum RemoteCommand {
     CloseSplit,
     GotoLocation,
     SelectLines,
+    ReplaceSelection,
     GetDiagnostics,
     UpdateMcpPresence,
 }
@@ -39,6 +40,7 @@ impl RemoteCommand {
             "close-split" => Ok(Self::CloseSplit),
             "goto-location" => Ok(Self::GotoLocation),
             "select-lines" => Ok(Self::SelectLines),
+            "replace-selection" => Ok(Self::ReplaceSelection),
             "get-diagnostics" => Ok(Self::GetDiagnostics),
             "update-mcp-presence" => Ok(Self::UpdateMcpPresence),
             other => bail!("unsupported remote command: {other}"),
@@ -59,6 +61,7 @@ impl RemoteCommand {
             Self::CloseSplit => "close-split",
             Self::GotoLocation => "goto-location",
             Self::SelectLines => "select-lines",
+            Self::ReplaceSelection => "replace-selection",
             Self::GetDiagnostics => "get-diagnostics",
             Self::UpdateMcpPresence => "update-mcp-presence",
         }

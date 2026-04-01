@@ -11,6 +11,6 @@ pub use ipc::{
 };
 pub use params::{
     FocusSplitArgs, GetCurrentDocumentArgs, GetDiagnosticsArgs, GetSelectionsArgs,
-    GotoLocationArgs, McpPresenceArgs, OpenFileArgs, SelectLinesArgs, SplitDirection,
+    GotoLocationArgs, McpPresenceArgs, OpenFileArgs, ReplaceSelectionArgs, SelectLinesArgs, SplitDirection,
     SplitOpenArgs,
 };

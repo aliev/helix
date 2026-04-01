@@ -43,6 +43,7 @@ pub fn is_supported_remote_command(command: &str) -> bool {
             | "close-split"
             | "goto-location"
             | "select-lines"
+            | "replace-selection"
             | "get-diagnostics"
     )
 }
