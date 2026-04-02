@@ -243,7 +243,6 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "M" => git_commit_amend,
                 "p" => git_hunk_preview,
                 "r" => git_reset_hunk,
-                "s" => git_commit_submit,
                 "y" => git_yank_hunk,
             },
             "a" => code_action,

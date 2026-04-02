@@ -28,6 +28,9 @@ pub(crate) fn git_commit(
     _args: Args,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate && is_pending_git_commit(view!(cx.editor).doc) {
+        return submit_active_git_commit(cx);
+    }
     open_git_commit_buffer(cx, GitCommitMode::Create, event)
 }
 
@@ -36,6 +39,9 @@ pub(crate) fn git_commit_amend(
     _args: Args,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate && is_pending_git_commit(view!(cx.editor).doc) {
+        return submit_active_git_commit(cx);
+    }
     open_git_commit_buffer(cx, GitCommitMode::Amend, event)
 }
 
@@ -56,6 +62,25 @@ pub(crate) fn is_pending_git_commit(doc_id: DocumentId) -> bool {
         .lock()
         .map(|pending| pending.contains_key(&doc_id))
         .unwrap_or(false)
+}
+
+fn submit_active_git_commit(cx: &mut compositor::Context) -> anyhow::Result<()> {
+    let doc_id = view!(cx.editor).doc;
+    ensure!(
+        is_pending_git_commit(doc_id),
+        "No active git commit message buffer"
+    );
+
+    write_impl(
+        cx,
+        None,
+        WriteOptions {
+            force: false,
+            auto_format: true,
+        },
+    )?;
+
+    buffer_close_by_ids_impl(cx, &[doc_id], false)
 }
 
 fn open_git_commit_buffer(
@@ -89,10 +114,10 @@ fn open_git_commit_buffer(
 
     cx.editor.set_status(match mode {
         GitCommitMode::Create => {
-            "Opened git commit message. Use :write-buffer-close to commit."
+            "Opened git commit message. Use Space g m or :write-buffer-close to commit."
         }
         GitCommitMode::Amend => {
-            "Opened amend message. Use :write-buffer-close to amend the last commit."
+            "Opened amend message. Use Space g M or :write-buffer-close to amend the last commit."
         }
     });
     Ok(())
@@ -157,7 +182,14 @@ fn commit_message_template(repo_root: &Path, mode: GitCommitMode) -> anyhow::Res
         bail!("No staged changes to commit");
     }
 
-    out.push_str("# Use :write-buffer-close to save this message and run git commit.\n");
+    out.push_str(match mode {
+        GitCommitMode::Create => {
+            "# Use Space g m or :write-buffer-close to save this message and run git commit.\n"
+        }
+        GitCommitMode::Amend => {
+            "# Use Space g M or :write-buffer-close to save this message and amend the last commit.\n"
+        }
+    });
     out.push_str("# Lines starting with # are ignored.\n");
     out.push_str("#\n");
     let staged = staged_changes_summary(repo_root)?;

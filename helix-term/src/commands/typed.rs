@@ -10,7 +10,7 @@ pub(crate) use super::git_blame::{
 };
 use super::git_blame::preview_git_line_blame;
 use super::git_commit::{
-    git_commit, git_commit_amend, is_pending_git_commit, mark_commit_message_saved,
+    git_commit, git_commit_amend, mark_commit_message_saved,
 };
 pub(crate) use super::git_conflict::{
     GIT_CONFLICT_PREVIEW_ID, GitConflictPopup, refresh_git_conflict_preview,
@@ -195,7 +195,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
     Ok(())
 }
 
-fn buffer_close_by_ids_impl(
+pub(crate) fn buffer_close_by_ids_impl(
     cx: &mut compositor::Context,
     doc_ids: &[DocumentId],
     force: bool,
@@ -396,7 +396,7 @@ fn buffer_previous(
     Ok(())
 }
 
-fn write_impl(
+pub(crate) fn write_impl(
     cx: &mut compositor::Context,
     path: Option<&str>,
     options: WriteOptions,
@@ -539,7 +539,7 @@ fn force_write(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     )
 }
 
-fn write_buffer_close(
+pub(crate) fn write_buffer_close(
     cx: &mut compositor::Context,
     args: Args,
     event: PromptEvent,
@@ -581,24 +581,6 @@ fn force_write_buffer_close(
 
     let document_ids = buffer_gather_paths_impl(cx.editor, args);
     buffer_close_by_ids_impl(cx, &document_ids, false)
-}
-
-pub(crate) fn git_commit_submit(
-    cx: &mut compositor::Context,
-    _args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-
-    let doc_id = view!(cx.editor).doc;
-    ensure!(
-        is_pending_git_commit(doc_id),
-        "No active git commit message buffer"
-    );
-
-    write_buffer_close(cx, Args::default(), PromptEvent::Validate)
 }
 
 fn new_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -4020,17 +4002,6 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open an amend message buffer in a split. Save and close it to amend the last commit.",
         fun: git_commit_amend,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (0, Some(0)),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "git-commit-submit",
-        aliases: &[],
-        doc: "Save and close the active git commit message buffer, then run git commit.",
-        fun: git_commit_submit,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

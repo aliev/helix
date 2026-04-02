@@ -1,5 +1,5 @@
 use crate::{
-    commands::{self, OnKeyCallback, OnKeyCallbackKind},
+    commands::{self, git_commit::is_pending_git_commit, OnKeyCallback, OnKeyCallbackKind},
     compositor::{Component, Context, Event, EventResult},
     events::{OnModeSwitch, PostCommand},
     handlers::completion::CompletionItem,
@@ -27,11 +27,12 @@ use helix_view::{
     document::{Mode, SCRATCH_BUFFER_NAME},
     editor::{CompleteAction, CursorShapeConfig},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
+    info::Info,
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{collections::BTreeSet, mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -44,6 +45,55 @@ pub struct EditorView {
     spinners: ProgressSpinners,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+}
+
+fn sticky_keymap_infobox(node: &crate::keymap::KeyTrieNode, editor: &Editor) -> Info {
+    let in_pending_git_commit = is_pending_git_commit(view!(editor).doc);
+    let title = node.infobox().title;
+    let mut body: Vec<(BTreeSet<KeyEvent>, String)> = Vec::with_capacity(node.len());
+
+    for (&key, trie) in node.iter() {
+        let desc = match trie {
+            crate::keymap::KeyTrie::MappableCommand(cmd) => {
+                if cmd.name() == "no_op" {
+                    continue;
+                }
+
+                if in_pending_git_commit {
+                    match cmd.name() {
+                        "git_commit" => {
+                            "Save and close the active git commit message buffer".to_string()
+                        }
+                        "git_commit_amend" => {
+                            "Save and close the active git amend message buffer".to_string()
+                        }
+                        _ => cmd.doc().to_string(),
+                    }
+                } else {
+                    cmd.doc().to_string()
+                }
+            }
+            crate::keymap::KeyTrie::Node(n) => n.infobox().title.to_string(),
+            crate::keymap::KeyTrie::Sequence(_) => "[Multiple commands]".to_string(),
+        };
+
+        match body.iter().position(|(_, d)| d == &desc) {
+            Some(pos) => {
+                body[pos].0.insert(key);
+            }
+            None => body.push((BTreeSet::from([key]), desc)),
+        }
+    }
+
+    let body: Vec<_> = body
+        .into_iter()
+        .map(|(events, desc)| {
+            let events = events.iter().map(ToString::to_string).collect::<Vec<_>>();
+            (events.join(", "), desc)
+        })
+        .collect();
+
+    Info::new(title, &body)
 }
 
 #[derive(Debug, Clone)]
@@ -934,7 +984,10 @@ impl EditorView {
         let mut last_mode = mode;
         self.pseudo_pending.extend(self.keymaps.pending());
         let key_result = self.keymaps.get(mode, event);
-        cxt.editor.autoinfo = self.keymaps.sticky().map(|node| node.infobox());
+        cxt.editor.autoinfo = self
+            .keymaps
+            .sticky()
+            .map(|node| sticky_keymap_infobox(node, cxt.editor));
 
         let mut execute_command = |command: &commands::MappableCommand| {
             command.execute(cxt);
@@ -965,7 +1018,9 @@ impl EditorView {
             KeymapResult::Matched(command) => {
                 execute_command(command);
             }
-            KeymapResult::Pending(node) => cxt.editor.autoinfo = Some(node.infobox()),
+            KeymapResult::Pending(node) => {
+                cxt.editor.autoinfo = Some(sticky_keymap_infobox(node, cxt.editor))
+            }
             KeymapResult::MatchedSequence(commands) => {
                 for command in commands {
                     execute_command(command);
