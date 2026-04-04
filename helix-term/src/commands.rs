@@ -1,4 +1,5 @@
 pub(crate) mod dap;
+pub(crate) mod file_location;
 pub(crate) mod git_blame;
 pub(crate) mod git_commit;
 pub(crate) mod git_conflict;
@@ -535,7 +536,7 @@ impl MappableCommand {
         git_reset_hunk, "Reset git hunk under cursor",
         git_yank_hunk, "Copy git hunk under cursor to clipboard",
         copy_git_file_location, "Copy git permalink with selected line range to clipboard",
-        copy_file_location, "Copy file path and selected line range to clipboard",
+        show_file_location, "Show file location popup",
         toggle_comments, "Comment/uncomment selections",
         toggle_line_comments, "Line comment/uncomment selections",
         toggle_block_comments, "Block comment/uncomment selections",
@@ -5916,8 +5917,8 @@ fn copy_git_file_location(cx: &mut Context) {
     execute_typed_command(cx, "copy-git-file-location");
 }
 
-fn copy_file_location(cx: &mut Context) {
-    execute_typed_command(cx, "copy-file-location");
+fn show_file_location(cx: &mut Context) {
+    file_location::show_file_location(cx);
 }
 
 fn wclose(cx: &mut Context) {
