@@ -78,7 +78,6 @@ struct FileLocationInfo {
     absolute_path: String,
     relative_location: String,
     absolute_location: String,
-    selection_summary: String,
 }
 
 impl FileLocationInfo {
@@ -100,17 +99,15 @@ impl FileLocationInfo {
         let start_line = start_line + 1;
         let end_line = end_line + 1;
 
-        let (relative_location, absolute_location, selection_summary) = if start_line == end_line {
+        let (relative_location, absolute_location) = if start_line == end_line {
             (
                 format!("{relative_path}:{start_line}"),
                 format!("{absolute_path}:{start_line}"),
-                format!("line {start_line}"),
             )
         } else {
             (
                 format!("{relative_path}:{start_line}-{end_line}"),
                 format!("{absolute_path}:{start_line}-{end_line}"),
-                format!("lines {start_line}-{end_line}"),
             )
         };
 
@@ -119,26 +116,17 @@ impl FileLocationInfo {
             absolute_path,
             relative_location,
             absolute_location,
-            selection_summary,
         })
     }
 }
 
 fn render_file_location_markdown(info: &FileLocationInfo) -> String {
     let mut rendered = String::new();
-    let _ = writeln!(rendered, "### File Location");
-    let _ = writeln!(
-        rendered,
-        "`y` copy relative location, `a` absolute location, `r` relative path, `f` absolute path, `Esc` close\n"
-    );
-    let _ = writeln!(rendered, "**Selection**");
-    let _ = writeln!(rendered, "`{}`\n", info.selection_summary);
-    let _ = writeln!(rendered, "**Relative path**");
-    let _ = writeln!(rendered, "`{}`\n", info.relative_path);
-    let _ = writeln!(rendered, "**Absolute path**");
-    let _ = writeln!(rendered, "`{}`\n", info.absolute_path);
-    let _ = writeln!(rendered, "**Location**");
-    let _ = writeln!(rendered, "`{}`", info.relative_location);
+    let _ = writeln!(rendered, "`y` `{}`\n", info.relative_location);
+    let _ = writeln!(rendered, "`a` `{}`\n", info.absolute_location);
+    let _ = writeln!(rendered, "`r` `{}`\n", info.relative_path);
+    let _ = writeln!(rendered, "`f` `{}`\n", info.absolute_path);
+    let _ = writeln!(rendered, "`Esc` close");
     rendered
 }
 
