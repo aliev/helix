@@ -246,6 +246,9 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "y" => git_yank_hunk,
             },
             "a" => code_action,
+            "i" => { "Info"
+                "p" => show_symbol_path,
+            },
             "'" => last_picker,
             "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,

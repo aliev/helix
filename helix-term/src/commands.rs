@@ -423,6 +423,7 @@ impl MappableCommand {
         workspace_symbol_picker, "Open workspace symbol picker",
         syntax_workspace_symbol_picker, "Open workspace symbol picker from syntax information",
         lsp_or_syntax_workspace_symbol_picker, "Open workspace symbol picker from LSP or syntax information",
+        show_symbol_path, "Show symbol path under cursor",
         diagnostics_picker, "Open diagnostic picker",
         workspace_diagnostics_picker, "Open workspace diagnostic picker",
         last_picker, "Open last picker",
@@ -7135,4 +7136,8 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
     } else {
         syntax_workspace_symbol_picker(cx);
     }
+}
+
+fn show_symbol_path(cx: &mut Context) {
+    lsp::show_symbol_path_popup(cx);
 }

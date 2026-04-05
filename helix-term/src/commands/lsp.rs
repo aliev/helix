@@ -32,7 +32,7 @@ use crate::{
     ui::{self, overlay::overlaid, FileLocation, Picker, Popup, PromptEvent},
 };
 
-use std::{cmp::Ordering, collections::HashSet, fmt::Display, future::Future, path::Path};
+use std::{cmp::Ordering, collections::HashSet, fmt::Display, fmt::Write, future::Future, path::Path};
 
 /// Gets the first language server that is attached to a document which supports a specific feature.
 /// If there is no configured language server that supports the feature, this displays a status message.
@@ -86,6 +86,64 @@ fn lsp_location_to_location(
 struct SymbolInformationItem {
     location: Location,
     symbol: lsp::SymbolInformation,
+}
+
+pub(crate) const SYMBOL_PATH_POPUP_ID: &str = "symbol-path-popup";
+
+#[derive(Debug, Clone)]
+struct SymbolPathItem {
+    name: String,
+    kind: lsp::SymbolKind,
+}
+
+struct SymbolPathPopup {
+    markdown: ui::Markdown,
+}
+
+impl SymbolPathPopup {
+    fn new(contents: String, editor: &Editor) -> Self {
+        Self {
+            markdown: ui::Markdown::new(contents, editor.syn_loader.clone()),
+        }
+    }
+}
+
+impl compositor::Component for SymbolPathPopup {
+    fn handle_event(
+        &mut self,
+        event: &compositor::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
+        match event {
+            compositor::Event::Key(key) if key.modifiers.is_empty() => match key.code {
+                helix_view::keyboard::KeyCode::Char('y') => {
+                    compositor::EventResult::Consumed(Some(Box::new(|_compositor, cx| {
+                        if let Err(err) =
+                            copy_symbol_path_to_clipboard(cx, PromptEvent::Validate)
+                        {
+                            cx.editor.set_error(err.to_string());
+                        }
+                    })))
+                }
+                _ => self.markdown.handle_event(event, cx),
+            },
+            compositor::Event::Key(_) => self.markdown.handle_event(event, cx),
+            _ => self.markdown.handle_event(event, cx),
+        }
+    }
+
+    fn render(
+        &mut self,
+        area: helix_view::graphics::Rect,
+        frame: &mut tui::buffer::Buffer,
+        cx: &mut compositor::Context,
+    ) {
+        self.markdown.render(area, frame, cx);
+    }
+
+    fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        self.markdown.required_size(viewport)
+    }
 }
 
 struct DiagnosticStyles {
@@ -192,6 +250,175 @@ fn display_symbol_kind(kind: lsp::SymbolKind) -> &'static str {
             ""
         }
     }
+}
+
+fn symbol_path_text(path: &[SymbolPathItem]) -> String {
+    path.iter()
+        .map(|item| item.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+fn render_symbol_path_markdown(path: &[SymbolPathItem]) -> String {
+    let mut rendered = String::new();
+    let _ = writeln!(rendered, "### Symbol Path");
+    let _ = writeln!(rendered, "`y` copy path, `Esc` close\n");
+    let _ = writeln!(rendered, "{}", symbol_path_text(path));
+    let _ = writeln!(rendered);
+    for item in path {
+        let _ = writeln!(rendered, "- {} `{}`", display_symbol_kind(item.kind), item.name);
+    }
+    rendered
+}
+
+fn document_symbol_contains_cursor(
+    symbol: &lsp::DocumentSymbol,
+    cursor: usize,
+    text: &helix_core::Rope,
+    offset_encoding: OffsetEncoding,
+) -> bool {
+    let Some(range) = lsp_range_to_range(text, symbol.range, offset_encoding) else {
+        return false;
+    };
+    range.from() <= cursor && cursor < range.to().max(range.from() + 1)
+}
+
+fn find_nested_symbol_path(
+    symbols: &[lsp::DocumentSymbol],
+    cursor: usize,
+    text: &helix_core::Rope,
+    offset_encoding: OffsetEncoding,
+) -> Option<Vec<SymbolPathItem>> {
+    for symbol in symbols {
+        if !document_symbol_contains_cursor(symbol, cursor, text, offset_encoding) {
+            continue;
+        }
+
+        let current = SymbolPathItem {
+            name: symbol.name.clone(),
+            kind: symbol.kind,
+        };
+
+        if let Some(children) = symbol.children.as_ref() {
+            if let Some(mut child_path) =
+                find_nested_symbol_path(children, cursor, text, offset_encoding)
+            {
+                let mut path = vec![current];
+                path.append(&mut child_path);
+                return Some(path);
+            }
+        }
+
+        return Some(vec![current]);
+    }
+
+    None
+}
+
+fn current_symbol_path_from_response(
+    response: lsp::DocumentSymbolResponse,
+    doc: &Document,
+    view: &View,
+    offset_encoding: OffsetEncoding,
+) -> Option<Vec<SymbolPathItem>> {
+    let text = doc.text();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+
+    match response {
+        lsp::DocumentSymbolResponse::Nested(symbols) => {
+            find_nested_symbol_path(&symbols, cursor, text, offset_encoding)
+        }
+        lsp::DocumentSymbolResponse::Flat(symbols) => {
+            let mut containing: Vec<_> = symbols
+                .into_iter()
+                .filter_map(|symbol| {
+                    let range = lsp_range_to_range(text, symbol.location.range, offset_encoding)?;
+                    (range.from() <= cursor && cursor < range.to().max(range.from() + 1))
+                        .then_some((range.len(), range.from(), symbol))
+                })
+                .collect();
+
+            if containing.is_empty() {
+                return None;
+            }
+
+            containing.sort_by_key(|(len, start, _)| (std::cmp::Reverse(*len), *start));
+
+            let mut path = Vec::new();
+            for (_, _, symbol) in containing {
+                if path.last().is_some_and(|item: &SymbolPathItem| item.name == symbol.name) {
+                    continue;
+                }
+                path.push(SymbolPathItem {
+                    name: symbol.name,
+                    kind: symbol.kind,
+                });
+            }
+
+            Some(path)
+        }
+    }
+}
+
+fn current_symbol_path(
+    doc: &Document,
+    view: &View,
+    language_server: &Client,
+) -> anyhow::Result<Option<Vec<SymbolPathItem>>> {
+    let request = language_server
+        .document_symbols(doc.identifier())
+        .expect("language server feature already checked");
+    let offset_encoding = language_server.offset_encoding();
+    let response = block_on(request)?;
+    Ok(response.and_then(|response| {
+        current_symbol_path_from_response(response, doc, view, offset_encoding)
+    }))
+}
+
+pub fn show_symbol_path_popup(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    let Some(language_server) = doc
+        .language_servers_with_feature(LanguageServerFeature::DocumentSymbols)
+        .next()
+    else {
+        cx.editor
+            .set_error("No configured language server supports document symbols");
+        return;
+    };
+
+    match current_symbol_path(doc, view, language_server) {
+        Ok(Some(path)) => {
+            let contents = SymbolPathPopup::new(render_symbol_path_markdown(&path), cx.editor);
+            let popup = Popup::new(SYMBOL_PATH_POPUP_ID, contents).auto_close(true);
+            cx.push_layer(Box::new(popup));
+        }
+        Ok(None) => {
+            cx.editor
+                .set_error("No document symbol path is available at the cursor");
+        }
+        Err(err) => cx.editor.set_error(err.to_string()),
+    }
+}
+
+fn copy_symbol_path_to_clipboard(
+    cx: &mut compositor::Context,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    let language_server = doc
+        .language_servers_with_feature(LanguageServerFeature::DocumentSymbols)
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No configured language server supports document symbols"))?;
+    let path = current_symbol_path(doc, view, language_server)?
+        .ok_or_else(|| anyhow::anyhow!("No document symbol path is available at the cursor"))?;
+    cx.editor.registers.write('+', vec![symbol_path_text(&path)])?;
+    cx.editor
+        .set_status("Copied symbol path to system clipboard");
+    Ok(())
 }
 
 #[derive(Copy, Clone, PartialEq)]
