@@ -33,7 +33,7 @@ fn update_conflict_diagnostics(editor: &mut Editor, doc_id: DocumentId) -> bool 
     }
 
     doc.replace_diagnostics(diagnostics, &[], None);
-    doc.previous_diagnostic_id = None;
+    doc.previous_diagnostic_ids.clear();
     true
 }
 
@@ -64,7 +64,7 @@ pub(super) fn register_hooks(handlers: &Handlers) {
             if event.doc.has_conflict_markers() {
                 event.doc
                     .replace_diagnostics(event.doc.conflict_marker_diagnostics(), &[], None);
-                event.doc.previous_diagnostic_id = None;
+                event.doc.previous_diagnostic_ids.clear();
                 return Ok(());
             }
             // Cancel the ongoing request, if present.
