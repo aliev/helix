@@ -1619,6 +1619,16 @@ impl Component for EditorView {
             Event::IdleTimeout => self.handle_idle_timeout(&mut cx),
             Event::FocusGained => {
                 self.terminal_focused = true;
+                match commands::typed::reload_stale_documents(context.editor) {
+                    Ok(0) => {}
+                    Ok(1) => context
+                        .editor
+                        .set_status("Reloaded 1 file changed on disk".to_string()),
+                    Ok(n) => context
+                        .editor
+                        .set_status(format!("Reloaded {n} files changed on disk")),
+                    Err(err) => context.editor.set_error(err.to_string()),
+                }
                 EventResult::Consumed(None)
             }
             Event::FocusLost => {

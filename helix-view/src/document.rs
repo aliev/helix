@@ -1445,6 +1445,23 @@ impl Document {
         Ok(())
     }
 
+    /// Whether the source file changed on disk since the last successful save/load.
+    pub fn is_stale_on_disk(&self) -> bool {
+        let Some(path) = self.path() else {
+            return false;
+        };
+
+        let Ok(metadata) = path.metadata() else {
+            return false;
+        };
+
+        let Ok(mtime) = metadata.modified() else {
+            return false;
+        };
+
+        self.last_saved_time < mtime
+    }
+
     /// Sets the [`Document`]'s encoding with the encoding correspondent to `label`.
     pub fn set_encoding(&mut self, label: &str) -> Result<(), Error> {
         let encoding =

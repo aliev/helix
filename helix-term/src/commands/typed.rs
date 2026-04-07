@@ -1574,6 +1574,69 @@ pub(crate) fn reload_all_documents(editor: &mut Editor) -> anyhow::Result<usize>
     Ok(editor.documents().count())
 }
 
+pub(crate) fn reload_stale_documents(editor: &mut Editor) -> anyhow::Result<usize> {
+    let scrolloff = editor.config().scrolloff;
+    let view_id = view!(editor).id;
+
+    let docs_view_ids: Vec<(DocumentId, Vec<ViewId>)> = editor
+        .documents_mut()
+        .filter_map(|doc| {
+            if doc.is_modified() || !doc.is_stale_on_disk() {
+                return None;
+            }
+
+            let mut view_ids: Vec<_> = doc.selections().keys().cloned().collect();
+
+            if view_ids.is_empty() {
+                doc.ensure_view_init(view_id);
+                view_ids.push(view_id);
+            };
+
+            Some((doc.id(), view_ids))
+        })
+        .collect();
+
+    let mut first_error = None;
+    let mut reloaded = 0usize;
+
+    for (doc_id, view_ids) in docs_view_ids {
+        let doc = doc_mut!(editor, &doc_id);
+
+        let view = view_mut!(editor, view_ids[0]);
+        view.sync_changes(doc);
+
+        if let Err(error) = doc.reload(view, &editor.diff_providers) {
+            if first_error.is_none() {
+                first_error = Some(anyhow::anyhow!("{error}"));
+            }
+            editor.set_error(format!("{}", error));
+            continue;
+        }
+
+        reloaded += 1;
+
+        if let Some(path) = doc.path() {
+            editor
+                .language_servers
+                .file_event_handler
+                .file_changed(path.clone());
+        }
+
+        for view_id in view_ids {
+            let view = view_mut!(editor, view_id);
+            if view.doc.eq(&doc_id) {
+                view.ensure_cursor_in_view(doc, scrolloff);
+            }
+        }
+    }
+
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+
+    Ok(reloaded)
+}
+
 /// Update the [`Document`] if it has been modified.
 fn update(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
