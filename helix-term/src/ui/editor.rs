@@ -1,5 +1,5 @@
 use crate::{
-    commands::{self, git_commit::is_pending_git_commit, OnKeyCallback, OnKeyCallbackKind},
+    commands::{self, OnKeyCallback, OnKeyCallbackKind},
     compositor::{Component, Context, Event, EventResult},
     events::{OnModeSwitch, PostCommand},
     handlers::completion::CompletionItem,
@@ -47,8 +47,7 @@ pub struct EditorView {
     terminal_focused: bool,
 }
 
-fn sticky_keymap_infobox(node: &crate::keymap::KeyTrieNode, editor: &Editor) -> Info {
-    let in_pending_git_commit = is_pending_git_commit(view!(editor).doc);
+fn sticky_keymap_infobox(node: &crate::keymap::KeyTrieNode, _editor: &Editor) -> Info {
     let title = node.infobox().title;
     let mut body: Vec<(BTreeSet<KeyEvent>, String)> = Vec::with_capacity(node.len());
 
@@ -59,19 +58,7 @@ fn sticky_keymap_infobox(node: &crate::keymap::KeyTrieNode, editor: &Editor) -> 
                     continue;
                 }
 
-                if in_pending_git_commit {
-                    match cmd.name() {
-                        "git_commit" => {
-                            "Save and close the active git commit message buffer".to_string()
-                        }
-                        "git_commit_amend" => {
-                            "Save and close the active git amend message buffer".to_string()
-                        }
-                        _ => cmd.doc().to_string(),
-                    }
-                } else {
-                    cmd.doc().to_string()
-                }
+                cmd.doc().to_string()
             }
             crate::keymap::KeyTrie::Node(n) => n.infobox().title.to_string(),
             crate::keymap::KeyTrie::Sequence(_) => "[Multiple commands]".to_string(),

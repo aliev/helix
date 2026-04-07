@@ -9,9 +9,6 @@ pub(crate) use super::git_blame::{
     GIT_LINE_BLAME_PREVIEW_ID, GitLineBlamePopup, refresh_git_line_blame_preview,
 };
 use super::git_blame::preview_git_line_blame;
-use super::git_commit::{
-    git_commit, git_commit_amend, mark_commit_message_saved,
-};
 pub(crate) use super::git_conflict::{
     GIT_CONFLICT_PREVIEW_ID, GitConflictPopup, refresh_git_conflict_preview,
 };
@@ -436,9 +433,7 @@ pub(crate) fn write_impl(
     };
 
     if fmt.is_none() {
-        let id = doc.id();
-        cx.editor.save(id, path, options.force)?;
-        mark_commit_message_saved(id);
+        cx.editor.save(doc.id(), path, options.force)?;
     }
 
     Ok(())
@@ -3980,28 +3975,6 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["diffget", "diffg"],
         doc: "Reset the diff change at the cursor position.",
         fun: reset_diff_change,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (0, Some(0)),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "git-commit",
-        aliases: &[],
-        doc: "Open a git commit message buffer in a split. Save and close it to commit staged changes.",
-        fun: git_commit,
-        completer: CommandCompleter::none(),
-        signature: Signature {
-            positionals: (0, Some(0)),
-            ..Signature::DEFAULT
-        },
-    },
-    TypableCommand {
-        name: "git-commit-amend",
-        aliases: &[],
-        doc: "Open an amend message buffer in a split. Save and close it to amend the last commit.",
-        fun: git_commit_amend,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

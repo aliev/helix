@@ -239,8 +239,6 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "b" => git_line_blame,
                 "c" => git_conflict_preview,
                 "l" => copy_git_file_location,
-                "m" => git_commit,
-                "M" => git_commit_amend,
                 "h" => git_hunk_preview,
             },
             "a" => code_action,

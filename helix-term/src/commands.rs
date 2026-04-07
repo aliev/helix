@@ -1,7 +1,6 @@
 pub(crate) mod dap;
 pub(crate) mod file_location;
 pub(crate) mod git_blame;
-pub(crate) mod git_commit;
 pub(crate) mod git_conflict;
 pub(crate) mod git_hunk;
 pub(crate) mod lsp;
@@ -530,8 +529,6 @@ impl MappableCommand {
         git_conflict_ours, "Resolve merge conflict with ours",
         git_conflict_theirs, "Resolve merge conflict with theirs",
         git_conflict_both, "Resolve merge conflict with both sides",
-        git_commit, "Open a git commit message buffer in a split",
-        git_commit_amend, "Open an amend message buffer in a split",
         git_hunk_preview, "Show sticky git hunk preview under cursor",
         git_line_blame, "Show git blame popup for current line",
         git_reset_hunk, "Reset git hunk under cursor",
@@ -5954,14 +5951,6 @@ fn execute_typed_command(cx: &mut Context, name: &str) {
 
 fn git_hunk_preview(cx: &mut Context) {
     execute_typed_command(cx, "git-hunk-preview");
-}
-
-fn git_commit(cx: &mut Context) {
-    execute_typed_command(cx, "git-commit");
-}
-
-fn git_commit_amend(cx: &mut Context) {
-    execute_typed_command(cx, "git-commit-amend");
 }
 
 fn git_line_blame(cx: &mut Context) {

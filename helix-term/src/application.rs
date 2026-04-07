@@ -679,7 +679,6 @@ impl Application {
 
         self.editor
             .set_doc_path(doc_save_event.doc_id, &doc_save_event.path);
-        crate::commands::git_commit::mark_commit_message_saved(doc_save_event.doc_id);
         // TODO: fix being overwritten by lsp
         self.editor.set_status(format!(
             "'{}' written, {lines}L {size}",
