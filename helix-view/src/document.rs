@@ -2150,6 +2150,10 @@ impl Document {
         }
     }
 
+    pub fn clear_diff_base(&mut self) {
+        self.diff_handle = None;
+    }
+
     pub fn version_control_head(&self) -> Option<Arc<Box<str>>> {
         self.version_control_head.as_ref().map(|a| a.load_full())
     }

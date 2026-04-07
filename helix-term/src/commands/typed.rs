@@ -1637,6 +1637,33 @@ pub(crate) fn reload_stale_documents(editor: &mut Editor) -> anyhow::Result<usiz
     Ok(reloaded)
 }
 
+pub(crate) fn refresh_clean_document_vcs_state(editor: &mut Editor) -> usize {
+    let doc_ids: Vec<_> = editor
+        .documents()
+        .filter(|doc| !doc.is_modified() && doc.path().is_some())
+        .map(|doc| doc.id())
+        .collect();
+
+    let mut refreshed = 0usize;
+
+    for doc_id in doc_ids {
+        let doc = doc_mut!(editor, &doc_id);
+        let Some(path) = doc.path().cloned() else {
+            continue;
+        };
+
+        if let Some(diff_base) = editor.diff_providers.get_diff_base(&path) {
+            doc.set_diff_base(diff_base);
+        } else {
+            doc.clear_diff_base();
+        }
+        doc.set_version_control_head(editor.diff_providers.get_current_head_name(&path));
+        refreshed += 1;
+    }
+
+    refreshed
+}
+
 /// Update the [`Document`] if it has been modified.
 fn update(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {

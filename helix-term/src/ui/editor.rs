@@ -1629,6 +1629,7 @@ impl Component for EditorView {
                         .set_status(format!("Reloaded {n} files changed on disk")),
                     Err(err) => context.editor.set_error(err.to_string()),
                 }
+                commands::typed::refresh_clean_document_vcs_state(context.editor);
                 EventResult::Consumed(None)
             }
             Event::FocusLost => {
