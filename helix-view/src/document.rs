@@ -271,7 +271,7 @@ pub struct Document {
 
     pub readonly: bool,
 
-    pub previous_diagnostic_id: Option<String>,
+    pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
     /// Annotations for LSP document color swatches
     pub color_swatches: Option<DocumentColorSwatches>,
@@ -825,7 +825,7 @@ impl Document {
             color_swatch_controller: TaskController::new(),
             document_highlight_controllers: HashMap::new(),
             syn_loader,
-            previous_diagnostic_id: None,
+            previous_diagnostic_ids: HashMap::new(),
             pull_diagnostic_controller: TaskController::new(),
             document_link_controller: TaskController::new(),
         }
@@ -1181,7 +1181,22 @@ impl Document {
             let write_result: anyhow::Result<_> = async {
                 let mut dst = tokio::fs::File::create(&write_path).await?;
                 to_writer(&mut dst, encoding_with_bom_info, &text).await?;
-                dst.sync_all().await?;
+                // Ignore ENOTSUP/EOPNOTSUPP (Operation not supported) errors from sync_all()
+                // This is known to occur on SMB filesystems on macOS where fsync is not supported
+                match dst.sync_all().await {
+                    Ok(_) => (),
+                    Err(err) if err.kind() == io::ErrorKind::Unsupported => (),
+                    // Some extra OS errors are thrown on macOS for example if fsync is not
+                    // available for this filesystem. NOTE: on macOS, ENOTSUP and EOPNOTSUPP are
+                    // not the same code, so we need to suppress the unreachable_patterns lint on
+                    // Unix generally.
+                    #[allow(unreachable_patterns)]
+                    #[cfg(unix)]
+                    Err(err)
+                        if matches!(err.raw_os_error(), Some(libc::ENOTSUP | libc::EOPNOTSUPP)) => {
+                    }
+                    Err(err) => return Err(err.into()),
+                }
                 Ok(())
             }
             .await;
