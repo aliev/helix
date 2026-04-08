@@ -8,6 +8,7 @@ use crate::{lsp, Client, LanguageServerId};
 enum Event {
     FileChanged {
         path: PathBuf,
+        typ: lsp::FileChangeType,
     },
     Register {
         client_id: LanguageServerId,
@@ -79,8 +80,12 @@ impl Handler {
         });
     }
 
+    pub fn file_event(&self, path: PathBuf, typ: lsp::FileChangeType) {
+        let _ = self.tx.send(Event::FileChanged { path, typ });
+    }
+
     pub fn file_changed(&self, path: PathBuf) {
-        let _ = self.tx.send(Event::FileChanged { path });
+        self.file_event(path, lsp::FileChangeType::CHANGED);
     }
 
     pub fn remove_client(&self, client_id: LanguageServerId) {
@@ -91,7 +96,7 @@ impl Handler {
         let mut state: HashMap<LanguageServerId, ClientState> = HashMap::new();
         while let Some(event) = rx.recv().await {
             match event {
-                Event::FileChanged { path } => {
+                Event::FileChanged { path, typ } => {
                     log::debug!("Received file event for {:?}", &path);
 
                     state.retain(|id, client_state| {
@@ -115,10 +120,7 @@ impl Handler {
                         );
                         client.did_change_watched_files(vec![lsp::FileEvent {
                             uri,
-                            // We currently always send the CHANGED state
-                            // since we don't actually have more context at
-                            // the moment.
-                            typ: lsp::FileChangeType::CHANGED,
+                            typ,
                         }]);
                         true
                     });

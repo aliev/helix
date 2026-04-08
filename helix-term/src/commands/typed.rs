@@ -1664,6 +1664,41 @@ pub(crate) fn refresh_clean_document_vcs_state(editor: &mut Editor) -> usize {
     refreshed
 }
 
+pub(crate) fn sync_workspace_lsp_file_events_on_focus(editor: &mut Editor) {
+    let cwd = helix_stdx::env::current_working_dir();
+    if !cwd.exists() {
+        return;
+    }
+
+    let diff_providers = editor.diff_providers.clone();
+    let file_event_handler = editor.language_servers.file_event_handler.clone();
+    diff_providers.for_each_changed_file(cwd, move |change| {
+        match change {
+            Ok(helix_vcs::FileChange::Untracked { path }) => {
+                file_event_handler.file_event(path, helix_lsp::lsp::FileChangeType::CREATED);
+            }
+            Ok(helix_vcs::FileChange::Modified { path })
+            | Ok(helix_vcs::FileChange::Conflict { path }) => {
+                file_event_handler.file_event(path, helix_lsp::lsp::FileChangeType::CHANGED);
+            }
+            Ok(helix_vcs::FileChange::Deleted { path }) => {
+                file_event_handler.file_event(path, helix_lsp::lsp::FileChangeType::DELETED);
+            }
+            Ok(helix_vcs::FileChange::Renamed { from_path, to_path }) => {
+                file_event_handler.file_event(
+                    from_path,
+                    helix_lsp::lsp::FileChangeType::DELETED,
+                );
+                file_event_handler.file_event(to_path, helix_lsp::lsp::FileChangeType::CREATED);
+            }
+            Err(err) => {
+                log::debug!("failed to sync workspace file events on focus: {err:#}");
+            }
+        }
+        true
+    });
+}
+
 /// Update the [`Document`] if it has been modified.
 fn update(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {

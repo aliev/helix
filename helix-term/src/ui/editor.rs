@@ -1630,6 +1630,7 @@ impl Component for EditorView {
                     Err(err) => context.editor.set_error(err.to_string()),
                 }
                 commands::typed::refresh_clean_document_vcs_state(context.editor);
+                commands::typed::sync_workspace_lsp_file_events_on_focus(context.editor);
                 EventResult::Consumed(None)
             }
             Event::FocusLost => {
