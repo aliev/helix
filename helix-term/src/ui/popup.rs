@@ -34,7 +34,7 @@ pub struct Popup<T: Component> {
     position: Option<Position>,
     area: Rect,
     position_bias: Open,
-    scroll_half_pages: usize,
+    scroll_offset: usize,
     auto_close: bool,
     ignore_escape_key: bool,
     id: &'static str,
@@ -48,7 +48,7 @@ impl<T: Component> Popup<T> {
             position: None,
             position_bias: Open::Below,
             area: Rect::new(0, 0, 0, 0),
-            scroll_half_pages: 0,
+            scroll_offset: 0,
             auto_close: false,
             ignore_escape_key: false,
             id,
@@ -95,12 +95,18 @@ impl<T: Component> Popup<T> {
         self
     }
 
+    fn half_page_size(&self) -> usize {
+        let border = usize::from(self.area.width > 0 && self.area.height > 0);
+        let inner_height = self.area.height.saturating_sub((border * 2) as u16) as usize;
+        (inner_height / 2).max(1)
+    }
+
     pub fn scroll_half_page_down(&mut self) {
-        self.scroll_half_pages += 1;
+        self.scroll_offset = self.scroll_offset.saturating_add(self.half_page_size());
     }
 
     pub fn scroll_half_page_up(&mut self) {
-        self.scroll_half_pages = self.scroll_half_pages.saturating_sub(1);
+        self.scroll_offset = self.scroll_offset.saturating_sub(self.half_page_size());
     }
 
     /// Toggles the Popup's scrollbar.
@@ -343,11 +349,8 @@ impl<T: Component> Component for Popup<T> {
         let border = usize::from(render_borders);
 
         let max_offset = child_height.saturating_sub(inner.height) as usize;
-        let half_page_size = (inner.height / 2) as usize;
-        let scroll = max_offset.min(self.scroll_half_pages * half_page_size);
-        if half_page_size > 0 {
-            self.scroll_half_pages = scroll / half_page_size;
-        }
+        let scroll = max_offset.min(self.scroll_offset);
+        self.scroll_offset = scroll;
         cx.scroll = Some(scroll);
         self.contents.render(inner, surface, cx);
 
