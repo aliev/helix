@@ -530,6 +530,7 @@ impl MappableCommand {
         git_conflict_theirs, "Resolve merge conflict with theirs",
         git_conflict_both, "Resolve merge conflict with both sides",
         git_hunk_preview, "Show sticky git hunk preview under cursor",
+        git_diff_branch, "Show files changed in the current branch relative to the default base branch",
         git_line_blame, "Show git blame popup for current line",
         git_reset_hunk, "Reset git hunk under cursor",
         git_yank_hunk, "Copy git hunk under cursor to clipboard",
@@ -3698,6 +3699,12 @@ pub(crate) fn show_git_diff_branch_picker(
     });
 
     compositor.push(Box::new(overlaid(picker)));
+}
+
+fn git_diff_branch(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, cx| {
+        show_git_diff_branch_picker(cx.editor, compositor, None);
+    }));
 }
 
 fn resolve_branch_diff_base(
