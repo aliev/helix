@@ -3670,6 +3670,13 @@ pub(crate) fn show_git_diff_branch_picker(
             style_renamed: renamed,
         },
         move |cx, meta: &BranchFileChange, action| {
+            if let BranchFileChange::Added { path } = meta {
+                if let Err(err) = cx.editor.open(path, action) {
+                    cx.editor.set_error(err.to_string());
+                }
+                return;
+            }
+
             let diff = match cx
                 .editor
                 .diff_providers
@@ -3699,6 +3706,19 @@ pub(crate) fn show_git_diff_branch_picker(
     );
 
     let picker = picker.with_preview_document(move |editor, meta| {
+        if let BranchFileChange::Added { path } = meta {
+            let mut doc = Document::open(
+                path,
+                None,
+                true,
+                editor.config.clone(),
+                editor.syn_loader.clone(),
+            )
+            .ok()?;
+            doc.readonly = true;
+            return Some((Box::new(doc), None));
+        }
+
         let diff = editor
             .diff_providers
             .get_branch_file_diff(&cwd, &resolved_base, preview_source.as_deref(), meta.path())
