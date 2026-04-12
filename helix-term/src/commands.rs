@@ -3830,8 +3830,11 @@ fn open_branch_diff_buffer(
     editor.new_file(action);
     let (view, doc) = current!(editor);
     let contents = branch_diff_contents(base_branch, path, diff.to_string());
-    let transaction = Transaction::insert(doc.text(), doc.selection(view.id), contents.into())
-        .with_selection(Selection::point(0));
+    let transaction = Transaction::change(
+        doc.text(),
+        std::iter::once((0, doc.text().len_chars(), Some(contents.into()))),
+    )
+    .with_selection(Selection::point(0));
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
     doc.reset_modified();
