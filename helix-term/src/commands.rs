@@ -3725,16 +3725,14 @@ fn resolve_branch_diff_base(
     bail!("Unable to resolve a base branch; try :git-diff-branch <base-branch>")
 }
 
-fn branch_diff_buffer_path(base_branch: &str, path: &Path) -> PathBuf {
-    let sanitized_base = base_branch.replace('/', "__");
+fn branch_diff_buffer_path(_base_branch: &str, path: &Path) -> PathBuf {
     let display_path = helix_stdx::path::get_relative_path(path).into_owned();
     let file_name = display_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("diff");
     let diff_name = format!("{file_name}.diff");
-    let mut synthetic = PathBuf::from(".git-diff-branch");
-    synthetic.push(sanitized_base);
+    let mut synthetic = PathBuf::new();
     if let Some(parent) = display_path.parent() {
         synthetic.push(parent);
     }
@@ -3742,9 +3740,8 @@ fn branch_diff_buffer_path(base_branch: &str, path: &Path) -> PathBuf {
     synthetic
 }
 
-fn branch_diff_contents(base_branch: &str, path: &Path, diff: String) -> String {
-    let display_path = helix_stdx::path::get_relative_path(path);
-    format!("Branch diff vs {base_branch}\nFile: {}\n\n{diff}", display_path.display())
+fn branch_diff_contents(_base_branch: &str, _path: &Path, diff: String) -> String {
+    diff
 }
 
 fn build_branch_diff_preview_document(
