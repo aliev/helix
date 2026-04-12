@@ -3674,7 +3674,13 @@ pub(crate) fn show_git_diff_branch_picker(
                     return;
                 }
             };
-            if let Err(err) = open_branch_diff_buffer(cx.editor, action, &diff) {
+            if let Err(err) = open_branch_diff_buffer(
+                cx.editor,
+                action,
+                &diff,
+                &callback_base,
+                meta.path(),
+            ) {
                 cx.editor.set_error(err.to_string());
             }
         },
@@ -3685,7 +3691,10 @@ pub(crate) fn show_git_diff_branch_picker(
             .diff_providers
             .get_branch_file_diff(&cwd, &resolved_base, meta.path())
             .ok()?;
-        Some((build_branch_diff_preview_document(editor, diff), None))
+        Some((
+            build_branch_diff_preview_document(editor, diff, &resolved_base, meta.path()),
+            None,
+        ))
     });
 
     compositor.push(Box::new(overlaid(picker)));
@@ -3716,27 +3725,65 @@ fn resolve_branch_diff_base(
     bail!("Unable to resolve a base branch; try :git-diff-branch <base-branch>")
 }
 
-fn build_branch_diff_preview_document(editor: &Editor, diff: String) -> Box<Document> {
+fn branch_diff_buffer_path(base_branch: &str, path: &Path) -> PathBuf {
+    let sanitized_base = base_branch.replace('/', "__");
+    let display_path = helix_stdx::path::get_relative_path(path).into_owned();
+    let file_name = display_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("diff");
+    let diff_name = format!("{file_name}.diff");
+    let mut synthetic = PathBuf::from(".git-diff-branch");
+    synthetic.push(sanitized_base);
+    if let Some(parent) = display_path.parent() {
+        synthetic.push(parent);
+    }
+    synthetic.push(diff_name);
+    synthetic
+}
+
+fn branch_diff_contents(base_branch: &str, path: &Path, diff: String) -> String {
+    let display_path = helix_stdx::path::get_relative_path(path);
+    format!("Branch diff vs {base_branch}\nFile: {}\n\n{diff}", display_path.display())
+}
+
+fn build_branch_diff_preview_document(
+    editor: &Editor,
+    diff: String,
+    base_branch: &str,
+    path: &Path,
+) -> Box<Document> {
     let mut doc = Document::from(
-        Rope::from(diff),
+        Rope::from(branch_diff_contents(base_branch, path, diff)),
         None,
         editor.config.clone(),
         editor.syn_loader.clone(),
     );
+    let synthetic_path = branch_diff_buffer_path(base_branch, path);
+    doc.set_path(Some(&synthetic_path));
     doc.readonly = true;
     let loader = editor.syn_loader.load();
     let _ = doc.set_language_by_language_id("diff", &loader);
     Box::new(doc)
 }
 
-fn open_branch_diff_buffer(editor: &mut Editor, action: Action, diff: &str) -> anyhow::Result<()> {
+fn open_branch_diff_buffer(
+    editor: &mut Editor,
+    action: Action,
+    diff: &str,
+    base_branch: &str,
+    path: &Path,
+) -> anyhow::Result<()> {
     editor.new_file(action);
     let (view, doc) = current!(editor);
-    let transaction = Transaction::insert(doc.text(), doc.selection(view.id), diff.to_string().into())
+    let contents = branch_diff_contents(base_branch, path, diff.to_string());
+    let transaction = Transaction::insert(doc.text(), doc.selection(view.id), contents.into())
         .with_selection(Selection::point(0));
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
     doc.reset_modified();
+    let synthetic_path = branch_diff_buffer_path(base_branch, path);
+    doc.set_path(Some(&synthetic_path));
     doc.readonly = true;
     let loader = editor.syn_loader.load();
     let _ = doc.set_language_by_language_id("diff", &loader);
