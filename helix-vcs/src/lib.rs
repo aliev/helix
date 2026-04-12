@@ -81,10 +81,11 @@ impl DiffProviderRegistry {
         &self,
         cwd: &Path,
         base_ref: &str,
+        source_ref: Option<&str>,
     ) -> Result<Vec<BranchFileChange>> {
         self.providers
             .iter()
-            .find_map(|provider| match provider.get_branch_changed_files(cwd, base_ref) {
+            .find_map(|provider| match provider.get_branch_changed_files(cwd, base_ref, source_ref) {
                 Ok(res) => Some(Ok(res)),
                 Err(err) => {
                     log::debug!("{err:#?}");
@@ -103,12 +104,13 @@ impl DiffProviderRegistry {
         &self,
         cwd: &Path,
         base_ref: &str,
+        source_ref: Option<&str>,
         path: &Path,
     ) -> Result<String> {
         self.providers
             .iter()
             .find_map(
-                |provider| match provider.get_branch_file_diff(cwd, base_ref, path) {
+                |provider| match provider.get_branch_file_diff(cwd, base_ref, source_ref, path) {
                     Ok(res) => Some(Ok(res)),
                     Err(err) => {
                         log::debug!("{err:#?}");
@@ -205,18 +207,29 @@ impl DiffProvider {
         }
     }
 
-    fn get_branch_changed_files(&self, cwd: &Path, base_ref: &str) -> Result<Vec<BranchFileChange>> {
+    fn get_branch_changed_files(
+        &self,
+        cwd: &Path,
+        base_ref: &str,
+        source_ref: Option<&str>,
+    ) -> Result<Vec<BranchFileChange>> {
         match self {
             #[cfg(feature = "git")]
-            Self::Git => git::get_branch_changed_files(cwd, base_ref),
+            Self::Git => git::get_branch_changed_files(cwd, base_ref, source_ref),
             Self::None => bail!("No diff support compiled in"),
         }
     }
 
-    fn get_branch_file_diff(&self, cwd: &Path, base_ref: &str, path: &Path) -> Result<String> {
+    fn get_branch_file_diff(
+        &self,
+        cwd: &Path,
+        base_ref: &str,
+        source_ref: Option<&str>,
+        path: &Path,
+    ) -> Result<String> {
         match self {
             #[cfg(feature = "git")]
-            Self::Git => git::get_branch_file_diff(cwd, base_ref, path),
+            Self::Git => git::get_branch_file_diff(cwd, base_ref, source_ref, path),
             Self::None => bail!("No diff support compiled in"),
         }
     }

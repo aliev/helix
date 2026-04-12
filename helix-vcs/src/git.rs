@@ -111,7 +111,11 @@ pub fn get_permalink_info(file: &Path) -> Result<GitPermalinkInfo> {
     })
 }
 
-pub fn get_branch_changed_files(cwd: &Path, base_ref: &str) -> Result<Vec<BranchFileChange>> {
+pub fn get_branch_changed_files(
+    cwd: &Path,
+    base_ref: &str,
+    source_ref: Option<&str>,
+) -> Result<Vec<BranchFileChange>> {
     let repo = open_repo(cwd)
         .context("failed to open git repo")?
         .to_thread_local();
@@ -119,14 +123,15 @@ pub fn get_branch_changed_files(cwd: &Path, base_ref: &str) -> Result<Vec<Branch
         .workdir()
         .ok_or_else(|| anyhow!("working tree not found"))?
         .to_path_buf();
-    let merge_base = resolve_merge_base(&repo, base_ref)?;
+    let source_ref = source_ref.unwrap_or("HEAD");
+    let merge_base = resolve_merge_base(&repo, base_ref, source_ref)?;
     let output = run_git_command(
         &repo_root,
         [
             "diff",
             "--name-status",
             "--find-renames",
-            &format!("{merge_base}...HEAD"),
+            &format!("{merge_base}...{source_ref}"),
         ],
     )?;
 
@@ -137,7 +142,12 @@ pub fn get_branch_changed_files(cwd: &Path, base_ref: &str) -> Result<Vec<Branch
         .collect()
 }
 
-pub fn get_branch_file_diff(cwd: &Path, base_ref: &str, path: &Path) -> Result<String> {
+pub fn get_branch_file_diff(
+    cwd: &Path,
+    base_ref: &str,
+    source_ref: Option<&str>,
+    path: &Path,
+) -> Result<String> {
     let repo = open_repo(cwd)
         .context("failed to open git repo")?
         .to_thread_local();
@@ -145,7 +155,8 @@ pub fn get_branch_file_diff(cwd: &Path, base_ref: &str, path: &Path) -> Result<S
         .workdir()
         .ok_or_else(|| anyhow!("working tree not found"))?
         .to_path_buf();
-    let merge_base = resolve_merge_base(&repo, base_ref)?;
+    let source_ref = source_ref.unwrap_or("HEAD");
+    let merge_base = resolve_merge_base(&repo, base_ref, source_ref)?;
     let relative_path = path
         .strip_prefix(&repo_root)
         .unwrap_or(path)
@@ -156,7 +167,7 @@ pub fn get_branch_file_diff(cwd: &Path, base_ref: &str, path: &Path) -> Result<S
         [
             "diff",
             "--find-renames",
-            &format!("{merge_base}...HEAD"),
+            &format!("{merge_base}...{source_ref}"),
             "--",
             &relative_path,
         ],
@@ -205,11 +216,11 @@ fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {
     Ok(res)
 }
 
-fn resolve_merge_base(repo: &Repository, base_ref: &str) -> Result<String> {
+fn resolve_merge_base(repo: &Repository, base_ref: &str, source_ref: &str) -> Result<String> {
     let repo_root = repo
         .workdir()
         .ok_or_else(|| anyhow!("working tree not found"))?;
-    run_git_command(repo_root, ["merge-base", base_ref, "HEAD"])
+    run_git_command(repo_root, ["merge-base", base_ref, source_ref])
         .map(|output| output.trim().to_string())
 }
 

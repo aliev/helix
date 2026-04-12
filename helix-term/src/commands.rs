@@ -3577,6 +3577,7 @@ pub(crate) fn show_git_diff_branch_picker(
     editor: &mut Editor,
     compositor: &mut Compositor,
     base_branch: Option<&str>,
+    source_branch: Option<&str>,
 ) {
     struct BranchFileChangeData {
         cwd: PathBuf,
@@ -3592,7 +3593,7 @@ pub(crate) fn show_git_diff_branch_picker(
         return;
     }
 
-    let resolved_base = match resolve_branch_diff_base(editor, &cwd, base_branch) {
+    let resolved_base = match resolve_branch_diff_base(editor, &cwd, base_branch, source_branch) {
         Ok(base) => base,
         Err(err) => {
             editor.set_error(err.to_string());
@@ -3600,7 +3601,10 @@ pub(crate) fn show_git_diff_branch_picker(
         }
     };
 
-    let changes = match editor.diff_providers.get_branch_changed_files(&cwd, &resolved_base) {
+    let changes = match editor
+        .diff_providers
+        .get_branch_changed_files(&cwd, &resolved_base, source_branch)
+    {
         Ok(changes) => changes,
         Err(err) => {
             editor.set_error(err.to_string());
@@ -3651,6 +3655,8 @@ pub(crate) fn show_git_diff_branch_picker(
 
     let callback_cwd = cwd.clone();
     let callback_base = resolved_base.clone();
+    let callback_source = source_branch.map(ToOwned::to_owned);
+    let preview_source = source_branch.map(ToOwned::to_owned);
 
     let picker = Picker::new(
         columns,
@@ -3667,7 +3673,12 @@ pub(crate) fn show_git_diff_branch_picker(
             let diff = match cx
                 .editor
                 .diff_providers
-                .get_branch_file_diff(&callback_cwd, &callback_base, meta.path())
+                .get_branch_file_diff(
+                    &callback_cwd,
+                    &callback_base,
+                    callback_source.as_deref(),
+                    meta.path(),
+                )
             {
                 Ok(diff) => diff,
                 Err(err) => {
@@ -3690,7 +3701,7 @@ pub(crate) fn show_git_diff_branch_picker(
     let picker = picker.with_preview_document(move |editor, meta| {
         let diff = editor
             .diff_providers
-            .get_branch_file_diff(&cwd, &resolved_base, meta.path())
+            .get_branch_file_diff(&cwd, &resolved_base, preview_source.as_deref(), meta.path())
             .ok()?;
         Some((
             build_branch_diff_preview_document(editor, diff, &resolved_base, meta.path()),
@@ -3703,7 +3714,7 @@ pub(crate) fn show_git_diff_branch_picker(
 
 fn git_diff_branch(cx: &mut Context) {
     cx.callback.push(Box::new(|compositor, cx| {
-        show_git_diff_branch_picker(cx.editor, compositor, None);
+        show_git_diff_branch_picker(cx.editor, compositor, None, None);
     }));
 }
 
@@ -3711,18 +3722,19 @@ fn resolve_branch_diff_base(
     editor: &Editor,
     cwd: &Path,
     base_branch: Option<&str>,
+    source_branch: Option<&str>,
 ) -> anyhow::Result<String> {
     if let Some(base_branch) = base_branch {
         editor
             .diff_providers
-            .get_branch_changed_files(cwd, base_branch)?;
+            .get_branch_changed_files(cwd, base_branch, source_branch)?;
         return Ok(base_branch.to_string());
     }
 
     for candidate in ["origin/master", "origin/main"] {
         if editor
             .diff_providers
-            .get_branch_changed_files(cwd, candidate)
+            .get_branch_changed_files(cwd, candidate, source_branch)
             .is_ok()
         {
             return Ok(candidate.to_string());
@@ -3778,6 +3790,23 @@ fn open_branch_diff_buffer(
     base_branch: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
+    let synthetic_path = helix_stdx::path::canonicalize(branch_diff_buffer_path(base_branch, path));
+    if let Some(doc_id) = editor.document_id_by_path(&synthetic_path) {
+        editor.switch(doc_id, action);
+        let (view, doc) = current!(editor);
+        let contents = branch_diff_contents(base_branch, path, diff.to_string());
+        let transaction = Transaction::change(
+            doc.text(),
+            std::iter::once((0, doc.text().len_chars(), Some(contents.into()))),
+        )
+        .with_selection(Selection::point(0));
+        doc.apply(&transaction, view.id);
+        doc.append_changes_to_history(view);
+        doc.reset_modified();
+        doc.readonly = true;
+        return Ok(());
+    }
+
     editor.new_file(action);
     let (view, doc) = current!(editor);
     let contents = branch_diff_contents(base_branch, path, diff.to_string());
@@ -3786,7 +3815,6 @@ fn open_branch_diff_buffer(
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
     doc.reset_modified();
-    let synthetic_path = branch_diff_buffer_path(base_branch, path);
     doc.set_path(Some(&synthetic_path));
     doc.readonly = true;
     let loader = editor.syn_loader.load();

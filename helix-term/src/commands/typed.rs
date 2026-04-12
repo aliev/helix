@@ -135,10 +135,16 @@ fn git_diff_branch(
     }
 
     let base_branch = args.first().map(ToOwned::to_owned);
+    let source_branch = args.get(1).map(ToOwned::to_owned);
     let callback = async move {
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
-                show_git_diff_branch_picker(editor, compositor, base_branch.as_deref());
+                show_git_diff_branch_picker(
+                    editor,
+                    compositor,
+                    base_branch.as_deref(),
+                    source_branch.as_deref(),
+                );
             },
         ));
         Ok(call)
@@ -4246,7 +4252,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: git_diff_branch,
         completer: CommandCompleter::none(),
         signature: Signature {
-            positionals: (0, Some(1)),
+            positionals: (0, Some(2)),
             ..Signature::DEFAULT
         },
     },
