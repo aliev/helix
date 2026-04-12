@@ -18,7 +18,7 @@ pub use diff::{DiffHandle, Hunk};
 
 mod status;
 
-pub use status::FileChange;
+pub use status::{BranchFileChange, FileChange};
 
 #[derive(Debug, Clone)]
 pub struct GitPermalinkInfo {
@@ -75,6 +75,53 @@ impl DiffProviderRegistry {
                     None
                 }
             })
+    }
+
+    pub fn get_branch_changed_files(
+        &self,
+        cwd: &Path,
+        base_ref: &str,
+    ) -> Result<Vec<BranchFileChange>> {
+        self.providers
+            .iter()
+            .find_map(|provider| match provider.get_branch_changed_files(cwd, base_ref) {
+                Ok(res) => Some(Ok(res)),
+                Err(err) => {
+                    log::debug!("{err:#?}");
+                    log::debug!(
+                        "failed to obtain branch-relative changed files for {} against {}",
+                        cwd.display(),
+                        base_ref
+                    );
+                    None
+                }
+            })
+            .unwrap_or_else(|| Err(anyhow!("no diff provider returns success")))
+    }
+
+    pub fn get_branch_file_diff(
+        &self,
+        cwd: &Path,
+        base_ref: &str,
+        path: &Path,
+    ) -> Result<String> {
+        self.providers
+            .iter()
+            .find_map(
+                |provider| match provider.get_branch_file_diff(cwd, base_ref, path) {
+                    Ok(res) => Some(Ok(res)),
+                    Err(err) => {
+                        log::debug!("{err:#?}");
+                        log::debug!(
+                            "failed to obtain branch-relative diff for {} against {}",
+                            path.display(),
+                            base_ref
+                        );
+                        None
+                    }
+                },
+            )
+            .unwrap_or_else(|| Err(anyhow!("no diff provider returns success")))
     }
 
     /// Fire-and-forget changed file iteration. Runs everything in a background task. Keeps
@@ -154,6 +201,22 @@ impl DiffProvider {
         match self {
             #[cfg(feature = "git")]
             Self::Git => git::for_each_changed_file(cwd, f),
+            Self::None => bail!("No diff support compiled in"),
+        }
+    }
+
+    fn get_branch_changed_files(&self, cwd: &Path, base_ref: &str) -> Result<Vec<BranchFileChange>> {
+        match self {
+            #[cfg(feature = "git")]
+            Self::Git => git::get_branch_changed_files(cwd, base_ref),
+            Self::None => bail!("No diff support compiled in"),
+        }
+    }
+
+    fn get_branch_file_diff(&self, cwd: &Path, base_ref: &str, path: &Path) -> Result<String> {
+        match self {
+            #[cfg(feature = "git")]
+            Self::Git => git::get_branch_file_diff(cwd, base_ref, path),
             Self::None => bail!("No diff support compiled in"),
         }
     }

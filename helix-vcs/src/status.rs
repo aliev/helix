@@ -28,3 +28,23 @@ impl FileChange {
         }
     }
 }
+
+/// States for a file having changed in the current branch relative to a base branch.
+#[derive(Debug, Clone)]
+pub enum BranchFileChange {
+    Added { path: PathBuf },
+    Modified { path: PathBuf },
+    Deleted { path: PathBuf },
+    Renamed { from_path: PathBuf, to_path: PathBuf },
+}
+
+impl BranchFileChange {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Added { path } => path,
+            Self::Modified { path } => path,
+            Self::Deleted { path } => path,
+            Self::Renamed { to_path, .. } => to_path,
+        }
+    }
+}

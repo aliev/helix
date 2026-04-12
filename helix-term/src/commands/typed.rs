@@ -20,6 +20,7 @@ pub(crate) use super::git_hunk::{GIT_HUNK_PREVIEW_ID, GitHunkPopup, refresh_git_
 use super::git_hunk::{
     preview_diff_hunk, reset_diff_hunk, yank_diff_hunk,
 };
+use super::show_git_diff_branch_picker;
 use super::undo::{earlier, later, undo_list};
 use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
@@ -122,6 +123,28 @@ fn force_exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
     }
     cx.block_try_flush_writes()?;
     quit(cx, Args::default(), event)
+}
+
+fn git_diff_branch(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let base_branch = args.first().map(ToOwned::to_owned);
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                show_git_diff_branch_picker(editor, compositor, base_branch.as_deref());
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
 }
 
 fn quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -4213,6 +4236,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-diff-branch",
+        aliases: &[],
+        doc: "Show files changed in the current branch relative to a base branch and open unified diffs in a read-only scratch buffer.",
+        fun: git_diff_branch,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
             ..Signature::DEFAULT
         },
     },

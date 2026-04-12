@@ -15,7 +15,7 @@ use helix_stdx::{
     path::{self, find_paths},
     rope::{self, RopeSliceExt},
 };
-use helix_vcs::{FileChange, Hunk};
+use helix_vcs::{BranchFileChange, FileChange, Hunk};
 pub use lsp::*;
 pub use syntax::*;
 use tui::{
@@ -3570,6 +3570,177 @@ fn changed_file_picker(cx: &mut Context) {
             }
         });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+pub(crate) fn show_git_diff_branch_picker(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    base_branch: Option<&str>,
+) {
+    struct BranchFileChangeData {
+        cwd: PathBuf,
+        style_added: Style,
+        style_modified: Style,
+        style_deleted: Style,
+        style_renamed: Style,
+    }
+
+    let cwd = helix_stdx::env::current_working_dir();
+    if !cwd.exists() {
+        editor.set_error("Current working directory does not exist");
+        return;
+    }
+
+    let resolved_base = match resolve_branch_diff_base(editor, &cwd, base_branch) {
+        Ok(base) => base,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+    };
+
+    let changes = match editor.diff_providers.get_branch_changed_files(&cwd, &resolved_base) {
+        Ok(changes) => changes,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+    };
+
+    if changes.is_empty() {
+        editor.set_status(format!("No branch changes relative to {}", resolved_base));
+        return;
+    }
+
+    let added = editor.theme.get("diff.plus");
+    let modified = editor.theme.get("diff.delta");
+    let deleted = editor.theme.get("diff.minus");
+    let renamed = editor.theme.get("diff.delta.moved");
+
+    let columns = [
+        PickerColumn::new("change", |change: &BranchFileChange, data: &BranchFileChangeData| {
+            match change {
+                BranchFileChange::Added { .. } => Span::styled("+ added", data.style_added),
+                BranchFileChange::Modified { .. } => {
+                    Span::styled("~ modified", data.style_modified)
+                }
+                BranchFileChange::Deleted { .. } => Span::styled("- deleted", data.style_deleted),
+                BranchFileChange::Renamed { .. } => Span::styled("> renamed", data.style_renamed),
+            }
+            .into()
+        }),
+        PickerColumn::new("path", |change: &BranchFileChange, data: &BranchFileChangeData| {
+            let display_path = |path: &PathBuf| {
+                path.strip_prefix(&data.cwd)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+            };
+            match change {
+                BranchFileChange::Added { path } => display_path(path),
+                BranchFileChange::Modified { path } => display_path(path),
+                BranchFileChange::Deleted { path } => display_path(path),
+                BranchFileChange::Renamed { from_path, to_path } => {
+                    format!("{} -> {}", display_path(from_path), display_path(to_path))
+                }
+            }
+            .into()
+        }),
+    ];
+
+    let callback_cwd = cwd.clone();
+    let callback_base = resolved_base.clone();
+
+    let picker = Picker::new(
+        columns,
+        1,
+        changes,
+        BranchFileChangeData {
+            cwd: cwd.clone(),
+            style_added: added,
+            style_modified: modified,
+            style_deleted: deleted,
+            style_renamed: renamed,
+        },
+        move |cx, meta: &BranchFileChange, action| {
+            let diff = match cx
+                .editor
+                .diff_providers
+                .get_branch_file_diff(&callback_cwd, &callback_base, meta.path())
+            {
+                Ok(diff) => diff,
+                Err(err) => {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            };
+            if let Err(err) = open_branch_diff_buffer(cx.editor, action, &diff) {
+                cx.editor.set_error(err.to_string());
+            }
+        },
+    );
+
+    let picker = picker.with_preview_document(move |editor, meta| {
+        let diff = editor
+            .diff_providers
+            .get_branch_file_diff(&cwd, &resolved_base, meta.path())
+            .ok()?;
+        Some((build_branch_diff_preview_document(editor, diff), None))
+    });
+
+    compositor.push(Box::new(overlaid(picker)));
+}
+
+fn resolve_branch_diff_base(
+    editor: &Editor,
+    cwd: &Path,
+    base_branch: Option<&str>,
+) -> anyhow::Result<String> {
+    if let Some(base_branch) = base_branch {
+        editor
+            .diff_providers
+            .get_branch_changed_files(cwd, base_branch)?;
+        return Ok(base_branch.to_string());
+    }
+
+    for candidate in ["origin/master", "origin/main"] {
+        if editor
+            .diff_providers
+            .get_branch_changed_files(cwd, candidate)
+            .is_ok()
+        {
+            return Ok(candidate.to_string());
+        }
+    }
+
+    bail!("Unable to resolve a base branch; try :git-diff-branch <base-branch>")
+}
+
+fn build_branch_diff_preview_document(editor: &Editor, diff: String) -> Box<Document> {
+    let mut doc = Document::from(
+        Rope::from(diff),
+        None,
+        editor.config.clone(),
+        editor.syn_loader.clone(),
+    );
+    doc.readonly = true;
+    let loader = editor.syn_loader.load();
+    let _ = doc.set_language_by_language_id("diff", &loader);
+    Box::new(doc)
+}
+
+fn open_branch_diff_buffer(editor: &mut Editor, action: Action, diff: &str) -> anyhow::Result<()> {
+    editor.new_file(action);
+    let (view, doc) = current!(editor);
+    let transaction = Transaction::insert(doc.text(), doc.selection(view.id), diff.to_string().into())
+        .with_selection(Selection::point(0));
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    doc.reset_modified();
+    doc.readonly = true;
+    let loader = editor.syn_loader.load();
+    let _ = doc.set_language_by_language_id("diff", &loader);
+    Ok(())
 }
 
 pub fn command_palette(cx: &mut Context) {

@@ -1,8 +1,9 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::ArcSwap;
 use gix::filter::plumbing::driver::apply::Delay;
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 
 use gix::bstr::ByteSlice;
@@ -17,7 +18,7 @@ use gix::status::{
 };
 use gix::{Commit, ObjectId, Repository, ThreadSafeRepository};
 
-use crate::{FileChange, GitPermalinkInfo};
+use crate::{BranchFileChange, FileChange, GitPermalinkInfo};
 
 #[cfg(test)]
 mod test;
@@ -110,6 +111,58 @@ pub fn get_permalink_info(file: &Path) -> Result<GitPermalinkInfo> {
     })
 }
 
+pub fn get_branch_changed_files(cwd: &Path, base_ref: &str) -> Result<Vec<BranchFileChange>> {
+    let repo = open_repo(cwd)
+        .context("failed to open git repo")?
+        .to_thread_local();
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| anyhow!("working tree not found"))?
+        .to_path_buf();
+    let merge_base = resolve_merge_base(&repo, base_ref)?;
+    let output = run_git_command(
+        &repo_root,
+        [
+            "diff",
+            "--name-status",
+            "--find-renames",
+            &format!("{merge_base}...HEAD"),
+        ],
+    )?;
+
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| parse_branch_changed_file_line(line, &repo_root))
+        .collect()
+}
+
+pub fn get_branch_file_diff(cwd: &Path, base_ref: &str, path: &Path) -> Result<String> {
+    let repo = open_repo(cwd)
+        .context("failed to open git repo")?
+        .to_thread_local();
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| anyhow!("working tree not found"))?
+        .to_path_buf();
+    let merge_base = resolve_merge_base(&repo, base_ref)?;
+    let relative_path = path
+        .strip_prefix(&repo_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    run_git_command(
+        &repo_root,
+        [
+            "diff",
+            "--find-renames",
+            &format!("{merge_base}...HEAD"),
+            "--",
+            &relative_path,
+        ],
+    )
+}
+
 fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {
     // custom open options
     let mut git_open_opts_map = gix::sec::trust::Mapping::<gix::open::Options>::default();
@@ -150,6 +203,56 @@ fn open_repo(path: &Path) -> Result<ThreadSafeRepository> {
     )?;
 
     Ok(res)
+}
+
+fn resolve_merge_base(repo: &Repository, base_ref: &str) -> Result<String> {
+    let repo_root = repo
+        .workdir()
+        .ok_or_else(|| anyhow!("working tree not found"))?;
+    run_git_command(repo_root, ["merge-base", base_ref, "HEAD"])
+        .map(|output| output.trim().to_string())
+}
+
+fn run_git_command<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .with_context(|| format!("failed to run `git {}`", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "{}",
+            String::from_utf8_lossy(&output.stderr).trim().to_string()
+        );
+    }
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn parse_branch_changed_file_line(line: &str, repo_root: &Path) -> Result<BranchFileChange> {
+    let mut fields = line.split('\t');
+    let status = fields
+        .next()
+        .ok_or_else(|| anyhow!("missing git diff status"))?;
+    let first_path = fields
+        .next()
+        .ok_or_else(|| anyhow!("missing git diff path"))?;
+    let first_path = repo_root.join(first_path);
+
+    match status.chars().next() {
+        Some('A') => Ok(BranchFileChange::Added { path: first_path }),
+        Some('M') => Ok(BranchFileChange::Modified { path: first_path }),
+        Some('D') => Ok(BranchFileChange::Deleted { path: first_path }),
+        Some('R') => {
+            let to_path = fields
+                .next()
+                .ok_or_else(|| anyhow!("missing renamed destination path"))?;
+            Ok(BranchFileChange::Renamed {
+                from_path: first_path,
+                to_path: repo_root.join(to_path),
+            })
+        }
+        _ => bail!("unsupported git diff status line: {line}"),
+    }
 }
 
 /// Emulates the result of running `git status` from the command line.
