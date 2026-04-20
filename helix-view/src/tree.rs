@@ -368,75 +368,104 @@ impl Tree {
         // b) node is container, calculate areas for each child and push them on the stack
 
         while let Some((key, area)) = self.stack.pop() {
-            let node = &mut self.nodes[key];
+            let container_data = match &self.nodes[key].content {
+                Content::View(_) => None,
+                Content::Container(container) => Some((container.layout, container.children.clone())),
+            };
 
-            match &mut node.content {
-                Content::View(view) => {
-                    // debug!!("setting view area {:?}", area);
-                    view.area = area;
-                } // TODO: call f()
-                Content::Container(container) => {
-                    // debug!!("setting container area {:?}", area);
+            if let Some((layout, children)) = container_data {
+                {
+                    let container = self.container_mut(key);
                     container.area = area;
+                }
+                let container_area = area;
 
-                    match container.layout {
-                        Layout::Horizontal => {
-                            let len = container.children.len();
+                match layout {
+                    Layout::Horizontal => {
+                        let len = children.len();
+                        let height = area.height / len as u16;
 
-                            let height = area.height / len as u16;
+                        let mut child_y = area.y;
 
-                            let mut child_y = area.y;
+                        for (i, child) in children.iter().enumerate() {
+                            let mut area =
+                                Rect::new(container_area.x, child_y, container_area.width, height);
+                            child_y += height;
 
-                            for (i, child) in container.children.iter().enumerate() {
-                                let mut area = Rect::new(
-                                    container.area.x,
-                                    child_y,
-                                    container.area.width,
-                                    height,
-                                );
-                                child_y += height;
-
-                                // last child takes the remaining width because we can get uneven
-                                // space from rounding
-                                if i == len - 1 {
-                                    area.height = container.area.y + container.area.height - area.y;
-                                }
-
-                                self.stack.push((*child, area));
+                            if i == len - 1 {
+                                area.height = container_area.y + container_area.height - area.y;
                             }
+
+                            self.stack.push((*child, area));
                         }
-                        Layout::Vertical => {
-                            let len = container.children.len();
-                            let len_u16 = len as u16;
+                    }
+                    Layout::Vertical => {
+                        let len = children.len();
+                        let len_u16 = len as u16;
 
-                            let inner_gap = 1u16;
-                            let total_gap = inner_gap * len_u16.saturating_sub(2);
+                        let inner_gap = 1u16;
+                        let total_gap = inner_gap * len_u16.saturating_sub(2);
+                        let used_area = area.width.saturating_sub(total_gap);
 
-                            let used_area = area.width.saturating_sub(total_gap);
-                            let width = used_area / len_u16;
+                        let preferred = children.iter().find_map(|child| match &self.nodes[*child].content {
+                            Content::View(view) => view.preferred_width.map(|width| {
+                                (
+                                    *child,
+                                    width.min(used_area.saturating_sub(len_u16.saturating_sub(1))),
+                                )
+                            }),
+                            Content::Container(_) => None,
+                        });
 
-                            let mut child_x = area.x;
+                        let default_width = used_area / len_u16;
+                        let remaining_width = preferred
+                            .map(|(_, width)| used_area.saturating_sub(width))
+                            .unwrap_or(used_area);
+                        let remaining_children = preferred
+                            .map(|_| len_u16.saturating_sub(1))
+                            .unwrap_or(len_u16);
+                        let remaining_default_width = if remaining_children == 0 {
+                            0
+                        } else {
+                            remaining_width / remaining_children
+                        };
 
-                            for (i, child) in container.children.iter().enumerate() {
-                                let mut area = Rect::new(
-                                    child_x,
-                                    container.area.y,
-                                    width,
-                                    container.area.height,
-                                );
-                                child_x += width + inner_gap;
+                        let mut child_x = area.x;
 
-                                // last child takes the remaining width because we can get uneven
-                                // space from rounding
-                                if i == len - 1 {
-                                    area.width = container.area.x + container.area.width - area.x;
-                                }
+                        for (i, child) in children.iter().enumerate() {
+                            let child_width = preferred
+                                .and_then(|(preferred_child, width)| {
+                                    if preferred_child == *child {
+                                        Some(width)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or_else(|| {
+                                    if preferred.is_some() {
+                                        remaining_default_width
+                                    } else {
+                                        default_width
+                                    }
+                                });
+                            let mut area = Rect::new(
+                                child_x,
+                                container_area.y,
+                                child_width,
+                                container_area.height,
+                            );
+                            child_x += child_width + inner_gap;
 
-                                self.stack.push((*child, area));
+                            if i == len - 1 {
+                                area.width = container_area.x + container_area.width - area.x;
                             }
+
+                            self.stack.push((*child, area));
                         }
                     }
                 }
+            } else if let Content::View(view) = &mut self.nodes[key].content {
+                view.area = area;
             }
         }
     }

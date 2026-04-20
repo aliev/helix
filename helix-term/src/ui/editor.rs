@@ -180,6 +180,10 @@ impl EditorView {
             overlays.push(overlay);
         }
 
+        if let Some(overlay) = Self::doc_file_sidebar_highlights(doc, theme) {
+            overlays.push(overlay);
+        }
+
         Self::doc_diagnostics_highlights_into(doc, theme, &mut overlays);
 
         if is_focused {
@@ -205,7 +209,7 @@ impl EditorView {
         }
 
         let gutter_overflow = view.gutter_offset(doc) == 0;
-        if !gutter_overflow {
+        if !Self::is_file_sidebar_doc(doc) && !gutter_overflow {
             Self::render_gutter(
                 editor,
                 doc,
@@ -557,6 +561,74 @@ impl EditorView {
         }
 
         Some(OverlayHighlights::Homogeneous { highlight, ranges })
+    }
+
+    fn is_file_sidebar_doc(doc: &Document) -> bool {
+        doc.path()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| name == ".hx-files")
+            .unwrap_or(false)
+    }
+
+    fn doc_file_sidebar_highlights(doc: &Document, theme: &Theme) -> Option<OverlayHighlights> {
+        if !Self::is_file_sidebar_doc(doc) {
+            return None;
+        }
+
+        let directory_highlight = theme
+            .find_highlight_exact("ui.text.directory")
+            .or_else(|| theme.find_highlight_exact("ui.text.info"))
+            .or_else(|| theme.find_highlight_exact("markup.link"));
+        let hidden_highlight = theme
+            .find_highlight_exact("ui.text.inactive")
+            .or_else(|| theme.find_highlight_exact("comment"));
+        if directory_highlight.is_none() && hidden_highlight.is_none() {
+            return None;
+        }
+
+        let text = doc.text().slice(..);
+        let mut spans = Vec::new();
+        let mut line_start = 0;
+
+        for line in text.lines() {
+            let line_len = line.len_chars();
+            if line_len == 0 {
+                line_start += 1;
+                continue;
+            }
+
+            let line_text = line.to_string();
+            let content = line_text.trim_start();
+            let name = content
+                .strip_prefix("▾ ")
+                .or_else(|| content.strip_prefix("▸ "))
+                .or_else(|| content.strip_prefix("  "))
+                .unwrap_or(content);
+
+            let base_name = name.trim_end_matches('/');
+            let is_hidden = base_name.starts_with('.');
+            let is_directory = name.ends_with('/');
+            let line_range = line_start..line_start + line_len;
+
+            if is_hidden {
+                if let Some(highlight) = hidden_highlight {
+                    spans.push((highlight, line_range));
+                }
+            } else if is_directory {
+                if let Some(highlight) = directory_highlight {
+                    spans.push((highlight, line_range));
+                }
+            }
+
+            line_start += line_len + 1;
+        }
+
+        if spans.is_empty() {
+            None
+        } else {
+            Some(OverlayHighlights::Heterogenous { highlights: spans })
+        }
     }
 
     /// Get highlight spans for selections in a document view.

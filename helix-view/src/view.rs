@@ -131,6 +131,7 @@ pub struct ViewPosition {
 pub struct View {
     pub id: ViewId,
     pub area: Rect,
+    pub preferred_width: Option<u16>,
     pub doc: DocumentId,
     pub jumps: JumpList,
     // documents accessed from this view from the oldest one to last viewed one
@@ -175,6 +176,7 @@ impl View {
             id: ViewId::default(),
             doc,
             area: Rect::default(), // will get calculated upon inserting into tree
+            preferred_width: None,
             jumps: JumpList::new((doc, Selection::point(0))), // TODO: use actual sel
             docs_access_history: Vec::new(),
             last_modified_docs: [None, None],
@@ -209,6 +211,16 @@ impl View {
     }
 
     pub fn gutter_offset(&self, doc: &Document) -> u16 {
+        if doc
+            .path()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| name == ".hx-files")
+            .unwrap_or(false)
+        {
+            return 0;
+        }
+
         let total_width = self
             .gutters
             .layout

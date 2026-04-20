@@ -82,6 +82,7 @@ use std::{
     error::Error,
     fmt,
     future::Future,
+    fs,
     io::Read,
     num::NonZeroUsize,
 };
@@ -89,6 +90,7 @@ use std::{
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use once_cell::sync::Lazy;
@@ -115,6 +117,34 @@ pub struct Context<'a> {
     pub on_next_key_callback: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     pub jobs: &'a mut Jobs,
 }
+
+const FILE_SIDEBAR_BUFFER_NAME: &str = ".hx-files";
+const FILE_SIDEBAR_PREFERRED_WIDTH: u16 = 32;
+
+#[derive(Debug, Clone)]
+enum FileSidebarEntryKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone)]
+struct FileSidebarEntry {
+    path: PathBuf,
+    depth: usize,
+    kind: FileSidebarEntryKind,
+}
+
+#[derive(Debug, Default)]
+struct FileSidebarState {
+    doc_id: Option<DocumentId>,
+    root: Option<PathBuf>,
+    expanded: HashSet<PathBuf>,
+    entries: Vec<FileSidebarEntry>,
+    show_all: bool,
+}
+
+static FILE_SIDEBAR_STATE: Lazy<Mutex<FileSidebarState>> =
+    Lazy::new(|| Mutex::new(FileSidebarState::default()));
 
 impl Context<'_> {
     /// Push a new component onto the compositor.
@@ -411,6 +441,13 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
+        file_sidebar, "Open file sidebar in a left split",
+        file_sidebar_action, "Open file or toggle directory in file sidebar",
+        file_sidebar_refresh_or_replace, "Refresh file sidebar or replace character",
+        file_sidebar_toggle_hidden, "Toggle hidden and ignored files in file sidebar",
+        file_sidebar_append_or_create, "Append or create a file or directory in file sidebar",
+        file_sidebar_replace_or_rename, "Replace with yanked text or rename entry in file sidebar",
+        file_sidebar_delete_or_delete_selection, "Delete sidebar entry or delete selection",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3304,6 +3341,755 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
     if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
+}
+
+fn file_sidebar(cx: &mut Context) {
+    if is_file_sidebar(cx.editor) {
+        let doc_id = doc!(cx.editor).id();
+        if let Err(err) = cx.editor.close_document(doc_id, true) {
+            let msg = match err {
+                helix_view::editor::CloseError::DoesNotExist => {
+                    "Sidebar buffer no longer exists".to_string()
+                }
+                helix_view::editor::CloseError::BufferModified(name) => {
+                    format!("Cannot close modified buffer {name}")
+                }
+                helix_view::editor::CloseError::SaveError(err) => err.to_string(),
+            };
+            cx.editor.set_error(msg);
+            return;
+        }
+        FILE_SIDEBAR_STATE.lock().unwrap().doc_id = None;
+        return;
+    }
+
+    let root = helix_stdx::env::current_working_dir();
+    if !root.exists() {
+        cx.editor.set_error("Current working directory does not exist");
+        return;
+    }
+
+    if let Err(err) = open_or_focus_file_sidebar(cx.editor, root) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+fn file_sidebar_action(cx: &mut Context) {
+    if let Err(err) = handle_file_sidebar_action(cx.editor) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+fn file_sidebar_refresh_or_replace(cx: &mut Context) {
+    if is_file_sidebar(cx.editor) {
+        if let Err(err) = refresh_file_sidebar(cx.editor) {
+            cx.editor.set_error(err.to_string());
+        } else {
+            cx.editor.set_status("Refreshed file sidebar");
+        }
+    } else {
+        replace(cx);
+    }
+}
+
+fn file_sidebar_toggle_hidden(cx: &mut Context) {
+    if !is_file_sidebar(cx.editor) {
+        return;
+    }
+
+    {
+        let mut state = FILE_SIDEBAR_STATE.lock().unwrap();
+        state.show_all = !state.show_all;
+    }
+
+    if let Err(err) = refresh_file_sidebar(cx.editor) {
+        cx.editor.set_error(err.to_string());
+    } else {
+        let show_all = FILE_SIDEBAR_STATE.lock().unwrap().show_all;
+        cx.editor.set_status(if show_all {
+            "Showing hidden and ignored files"
+        } else {
+            "Hiding hidden and ignored files"
+        });
+    }
+}
+
+fn file_sidebar_append_or_create(cx: &mut Context) {
+    if is_file_sidebar(cx.editor) {
+        file_sidebar_create(cx);
+    } else {
+        append_mode(cx);
+    }
+}
+
+fn file_sidebar_replace_or_rename(cx: &mut Context) {
+    if is_file_sidebar(cx.editor) {
+        file_sidebar_rename(cx);
+    } else {
+        replace_with_yanked(cx);
+    }
+}
+
+fn file_sidebar_delete_or_delete_selection(cx: &mut Context) {
+    if is_file_sidebar(cx.editor) {
+        file_sidebar_delete(cx);
+    } else {
+        delete_selection(cx);
+    }
+}
+
+fn is_file_sidebar(editor: &Editor) -> bool {
+    let Some(root) = FILE_SIDEBAR_STATE.lock().ok().and_then(|state| state.root.clone()) else {
+        return false;
+    };
+    let synthetic_path = helix_stdx::path::canonicalize(root.join(FILE_SIDEBAR_BUFFER_NAME));
+    doc!(editor)
+        .path()
+        .map(|path| path == &synthetic_path)
+        .unwrap_or(false)
+}
+
+fn file_sidebar_root() -> anyhow::Result<PathBuf> {
+    FILE_SIDEBAR_STATE
+        .lock()
+        .unwrap()
+        .root
+        .clone()
+        .ok_or_else(|| anyhow!("file sidebar root is not set"))
+}
+
+fn file_sidebar_entry_under_cursor(editor: &Editor) -> anyhow::Result<FileSidebarEntry> {
+    let cursor_line = {
+        let (view, doc) = current_ref!(editor);
+        doc.text()
+            .char_to_line(doc.selection(view.id).primary().cursor(doc.text().slice(..)))
+    };
+
+    FILE_SIDEBAR_STATE
+        .lock()
+        .unwrap()
+        .entries
+        .get(cursor_line)
+        .cloned()
+        .ok_or_else(|| anyhow!("no sidebar entry under cursor"))
+}
+
+fn file_sidebar_relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+fn file_sidebar_prefill_path(root: &Path, entry: &FileSidebarEntry) -> String {
+    let base = match entry.kind {
+        FileSidebarEntryKind::Directory => entry.path.as_path(),
+        FileSidebarEntryKind::File => entry.path.parent().unwrap_or(root),
+    };
+
+    let relative = base.strip_prefix(root).unwrap_or(base);
+    let mut prefill = relative.to_string_lossy().to_string();
+    if !prefill.is_empty() && !prefill.ends_with(std::path::MAIN_SEPARATOR) {
+        prefill.push(std::path::MAIN_SEPARATOR);
+    }
+    prefill
+}
+
+fn file_sidebar_resolve_input(root: &Path, input: &str) -> anyhow::Result<PathBuf> {
+    let trimmed = input.trim();
+    ensure!(!trimmed.is_empty(), "Path cannot be empty");
+    let path = PathBuf::from(trimmed);
+    Ok(if path.is_absolute() {
+        helix_stdx::path::canonicalize(path)
+    } else {
+        helix_stdx::path::canonicalize(root.join(path))
+    })
+}
+
+fn close_documents_matching_path(editor: &mut Editor, path: &Path) {
+    let doc_ids: Vec<_> = editor
+        .documents
+        .iter()
+        .filter_map(|(&doc_id, doc)| {
+            doc.path()
+                .filter(|doc_path| *doc_path == path)
+                .map(|_| doc_id)
+        })
+        .collect();
+    for doc_id in doc_ids {
+        let _ = editor.close_document(doc_id, true);
+    }
+}
+
+fn close_documents_under_path(editor: &mut Editor, dir: &Path) {
+    let doc_ids: Vec<_> = editor
+        .documents
+        .iter()
+        .filter_map(|(&doc_id, doc)| {
+            doc.path()
+                .filter(|path| path.starts_with(dir))
+                .map(|_| doc_id)
+        })
+        .collect();
+    for doc_id in doc_ids {
+        let _ = editor.close_document(doc_id, true);
+    }
+}
+
+fn update_open_documents_under_renamed_dir(editor: &mut Editor, old_path: &Path, new_path: &Path) {
+    let updates: Vec<_> = editor
+        .documents
+        .iter()
+        .filter_map(|(&doc_id, doc)| {
+            let path = doc.path()?;
+            if path == old_path || !path.starts_with(old_path) {
+                return None;
+            }
+            let suffix = path.strip_prefix(old_path).ok()?;
+            Some((doc_id, new_path.join(suffix)))
+        })
+        .collect();
+
+    for (doc_id, new_doc_path) in updates {
+        editor.set_doc_path(doc_id, &new_doc_path);
+    }
+}
+
+fn file_sidebar_create(cx: &mut Context) {
+    let root = match file_sidebar_root() {
+        Ok(root) => root,
+        Err(err) => {
+            cx.editor.set_error(err.to_string());
+            return;
+        }
+    };
+    let entry = match file_sidebar_entry_under_cursor(cx.editor) {
+        Ok(entry) => entry,
+        Err(err) => {
+            cx.editor.set_error(err.to_string());
+            return;
+        }
+    };
+    let prefill = file_sidebar_prefill_path(&root, &entry);
+
+    ui::prompt_with_input(
+        cx,
+        "create:".into(),
+        prefill,
+        None,
+        ui::completers::none,
+        move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+
+            let target = match file_sidebar_resolve_input(&root, input) {
+                Ok(path) => path,
+                Err(err) => {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            };
+
+            let result = if input.trim_end().ends_with('/') || input.trim_end().ends_with('\\') {
+                fs::create_dir_all(&target).map(|_| (target.clone(), true))
+            } else {
+                let create_res = (|| -> std::io::Result<(PathBuf, bool)> {
+                    if let Some(parent) = target.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)?;
+                    Ok((target.clone(), false))
+                })();
+                create_res
+            };
+
+            let (target, is_dir) = match result {
+                Ok(created) => created,
+                Err(err) => {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            };
+
+            cx.editor
+                .language_servers
+                .file_event_handler
+                .file_changed(target.clone());
+
+            if let Err(err) = refresh_file_sidebar(cx.editor) {
+                cx.editor.set_error(err.to_string());
+                return;
+            }
+            let _ = reveal_file_in_sidebar(cx.editor, &target);
+
+            if is_dir {
+                cx.editor.set_status(format!(
+                    "Created directory {}",
+                    file_sidebar_relative_path(&root, &target)
+                ));
+            } else {
+                let sidebar_view = view!(cx.editor).id;
+                if let Some(view_id) = cx
+                    .editor
+                    .tree
+                    .find_split_in_direction(sidebar_view, tree::Direction::Right)
+                {
+                    cx.editor.focus(view_id);
+                    if let Err(err) = cx.editor.open(&target, Action::Replace) {
+                        cx.editor.set_error(err.to_string());
+                        return;
+                    }
+                } else {
+                    cx.editor.new_file(Action::VerticalSplit);
+                    if let Err(err) = cx.editor.open(&target, Action::Replace) {
+                        cx.editor.set_error(err.to_string());
+                        return;
+                    }
+                }
+                cx.editor.set_status(format!(
+                    "Created file {}",
+                    file_sidebar_relative_path(&root, &target)
+                ));
+            }
+        },
+    );
+}
+
+fn file_sidebar_rename(cx: &mut Context) {
+    let root = match file_sidebar_root() {
+        Ok(root) => root,
+        Err(err) => {
+            cx.editor.set_error(err.to_string());
+            return;
+        }
+    };
+    let entry = match file_sidebar_entry_under_cursor(cx.editor) {
+        Ok(entry) => entry,
+        Err(err) => {
+            cx.editor.set_error(err.to_string());
+            return;
+        }
+    };
+    if entry.depth == 0 {
+        cx.editor.set_error("Cannot rename sidebar root");
+        return;
+    }
+
+    let old_path = entry.path.clone();
+    let old_is_dir = matches!(entry.kind, FileSidebarEntryKind::Directory);
+    let prefill = file_sidebar_relative_path(&root, &old_path);
+    ui::prompt_with_input(
+        cx,
+        "rename-to:".into(),
+        prefill,
+        None,
+        ui::completers::none,
+        move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+
+            let new_path = match file_sidebar_resolve_input(&root, input) {
+                Ok(path) => path,
+                Err(err) => {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            };
+
+            if old_path == new_path {
+                return;
+            }
+
+            if let Some(parent) = new_path.parent() {
+                if let Err(err) = fs::create_dir_all(parent) {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            }
+
+            if let Err(err) = cx.editor.move_path(&old_path, &new_path) {
+                cx.editor.set_error(err.to_string());
+                return;
+            }
+
+            if old_is_dir {
+                update_open_documents_under_renamed_dir(cx.editor, &old_path, &new_path);
+            }
+
+            if let Err(err) = refresh_file_sidebar(cx.editor) {
+                cx.editor.set_error(err.to_string());
+                return;
+            }
+            let _ = reveal_file_in_sidebar(cx.editor, &new_path);
+            cx.editor.set_status(format!(
+                "Renamed to {}",
+                file_sidebar_relative_path(&root, &new_path)
+            ));
+        },
+    );
+}
+
+fn file_sidebar_delete(cx: &mut Context) {
+    let root = match file_sidebar_root() {
+        Ok(root) => root,
+        Err(err) => {
+            cx.editor.set_error(err.to_string());
+            return;
+        }
+    };
+    let entry = match file_sidebar_entry_under_cursor(cx.editor) {
+        Ok(entry) => entry,
+        Err(err) => {
+            cx.editor.set_error(err.to_string());
+            return;
+        }
+    };
+    if entry.depth == 0 {
+        cx.editor.set_error("Cannot delete sidebar root");
+        return;
+    }
+
+    let target = entry.path.clone();
+    let label = file_sidebar_relative_path(&root, &target);
+    ui::prompt(
+        cx,
+        format!("delete {label}? [y/N]:").into(),
+        None,
+        ui::completers::none,
+        move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            if input.trim().to_ascii_lowercase() != "y" {
+                cx.editor.set_status("Delete cancelled");
+                return;
+            }
+
+            if target.is_dir() {
+                close_documents_under_path(cx.editor, &target);
+                if let Err(err) = fs::remove_dir_all(&target) {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            } else {
+                close_documents_matching_path(cx.editor, &target);
+                if let Err(err) = fs::remove_file(&target) {
+                    cx.editor.set_error(err.to_string());
+                    return;
+                }
+            }
+
+            cx.editor
+                .language_servers
+                .file_event_handler
+                .file_changed(target.clone());
+
+            if let Err(err) = refresh_file_sidebar(cx.editor) {
+                cx.editor.set_error(err.to_string());
+                return;
+            }
+            cx.editor.set_status(format!("Deleted {label}"));
+        },
+    );
+}
+
+fn open_or_focus_file_sidebar(editor: &mut Editor, root: PathBuf) -> anyhow::Result<()> {
+    let reveal_path = if is_file_sidebar(editor) {
+        None
+    } else {
+        doc!(editor)
+            .path()
+            .cloned()
+            .map(helix_stdx::path::canonicalize)
+    };
+    let existing_view = {
+        let mut state = FILE_SIDEBAR_STATE.lock().unwrap();
+        let same_root = state.root.as_ref().map(|it| it == &root).unwrap_or(false);
+        if !same_root {
+            state.root = Some(root.clone());
+            state.expanded.clear();
+            state.expanded.insert(root.clone());
+            state.entries.clear();
+            state.doc_id = None;
+            state.show_all = false;
+        } else if state.expanded.is_empty() {
+            state.expanded.insert(root.clone());
+        }
+
+        state.doc_id.and_then(|doc_id| {
+            editor
+                .tree
+                .views()
+                .find(|(view, _)| view.doc == doc_id)
+                .map(|(view, _)| view.id)
+        })
+    };
+
+    if let Some(view_id) = existing_view {
+        editor.focus(view_id);
+        refresh_file_sidebar(editor)?;
+        if let Some(path) = reveal_path.as_ref() {
+            reveal_file_in_sidebar(editor, path)?;
+        }
+        return Ok(());
+    }
+
+    editor.new_file(Action::VerticalSplit);
+    view_mut!(editor).preferred_width = Some(FILE_SIDEBAR_PREFERRED_WIDTH);
+    view_mut!(editor).gutters.layout.clear();
+    editor.swap_split_in_direction(tree::Direction::Left);
+    editor.tree.recalculate();
+    let doc_id = doc!(editor).id();
+    FILE_SIDEBAR_STATE.lock().unwrap().doc_id = Some(doc_id);
+    refresh_file_sidebar(editor)?;
+    if let Some(path) = reveal_path.as_ref() {
+        reveal_file_in_sidebar(editor, path)?;
+    }
+    Ok(())
+}
+
+fn refresh_file_sidebar(editor: &mut Editor) -> anyhow::Result<()> {
+    let was_sidebar = is_file_sidebar(editor);
+    let current_line = if was_sidebar {
+        let (view, doc) = current!(editor);
+        doc.text()
+            .char_to_line(doc.selection(view.id).primary().cursor(doc.text().slice(..)))
+    } else {
+        0
+    };
+    let (root, entries, selected_line) = {
+        let mut state = FILE_SIDEBAR_STATE.lock().unwrap();
+        let root = state
+            .root
+            .clone()
+            .ok_or_else(|| anyhow!("file sidebar root is not set"))?;
+        if state.expanded.is_empty() {
+            state.expanded.insert(root.clone());
+        }
+        let entries = build_file_sidebar_entries(&root, &state.expanded, state.show_all)?;
+        state.entries = entries.clone();
+
+        (root, entries, current_line)
+    };
+
+    let contents = render_file_sidebar_contents(&root, &entries);
+    let synthetic_path = helix_stdx::path::canonicalize(root.join(FILE_SIDEBAR_BUFFER_NAME));
+    let (view, doc) = current!(editor);
+    view.gutters.layout.clear();
+    let transaction = Transaction::change(
+        doc.text(),
+        std::iter::once((0, doc.text().len_chars(), Some(contents.into()))),
+    )
+    .with_selection(Selection::point(0));
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    doc.reset_modified();
+    doc.set_path(Some(&synthetic_path));
+    doc.set_soft_wrap_override(Some(false));
+    doc.readonly = true;
+
+    let target_line = selected_line.min(entries.len().saturating_sub(1));
+    let line_start = doc.text().line_to_char(target_line);
+    doc.set_selection(view.id, Selection::point(line_start));
+    Ok(())
+}
+
+fn build_file_sidebar_entries(
+    root: &Path,
+    expanded: &HashSet<PathBuf>,
+    show_all: bool,
+) -> anyhow::Result<Vec<FileSidebarEntry>> {
+    let mut entries = vec![FileSidebarEntry {
+        path: root.to_path_buf(),
+        depth: 0,
+        kind: FileSidebarEntryKind::Directory,
+    }];
+    collect_file_sidebar_entries(root, 1, expanded, show_all, &mut entries)?;
+    Ok(entries)
+}
+
+fn collect_file_sidebar_entries(
+    dir: &Path,
+    depth: usize,
+    expanded: &HashSet<PathBuf>,
+    show_all: bool,
+    entries: &mut Vec<FileSidebarEntry>,
+) -> anyhow::Result<()> {
+    if !expanded.contains(dir) {
+        return Ok(());
+    }
+
+    let mut children: Vec<(PathBuf, bool)> = WalkBuilder::new(dir)
+        .hidden(!show_all)
+        .parents(true)
+        .ignore(!show_all)
+        .git_ignore(!show_all)
+        .git_global(!show_all)
+        .git_exclude(!show_all)
+        .follow_links(false)
+        .max_depth(Some(1))
+        .build()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.into_path();
+            if path == dir {
+                return None;
+            }
+            let is_dir = path.is_dir();
+            Some((path, is_dir))
+        })
+        .collect();
+
+    children.sort_by(|(path1, is_dir1), (path2, is_dir2)| (!is_dir1, path1).cmp(&(!is_dir2, path2)));
+
+    for (path, is_dir) in children {
+        entries.push(FileSidebarEntry {
+            path: path.clone(),
+            depth,
+            kind: if is_dir {
+                FileSidebarEntryKind::Directory
+            } else {
+                FileSidebarEntryKind::File
+            },
+        });
+
+        if is_dir {
+            collect_file_sidebar_entries(&path, depth + 1, expanded, show_all, entries)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn render_file_sidebar_contents(root: &Path, entries: &[FileSidebarEntry]) -> String {
+    let expanded = FILE_SIDEBAR_STATE.lock().unwrap().expanded.clone();
+    let mut lines = Vec::with_capacity(entries.len());
+
+    for entry in entries {
+        let indent = "  ".repeat(entry.depth);
+        let name = if entry.depth == 0 {
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_else(|| root.as_os_str().to_str().unwrap_or("."))
+                .to_string()
+        } else {
+            entry.path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        let line = match entry.kind {
+            FileSidebarEntryKind::Directory => {
+                let marker = if expanded.contains(&entry.path) { "▾" } else { "▸" };
+                format!("{indent}{marker} {name}/")
+            }
+            FileSidebarEntryKind::File => format!("{indent}  {name}"),
+        };
+        lines.push(line);
+    }
+
+    format!("{}\n", lines.join("\n"))
+}
+
+fn reveal_file_in_sidebar(editor: &mut Editor, path: &Path) -> anyhow::Result<()> {
+    let target = helix_stdx::path::canonicalize(path);
+    let should_reveal = {
+        let mut state = FILE_SIDEBAR_STATE.lock().unwrap();
+        let Some(root) = state.root.clone() else {
+            return Ok(());
+        };
+        if !target.starts_with(&root) {
+            return Ok(());
+        }
+
+        state.expanded.insert(root.clone());
+        let mut current = target.parent();
+        while let Some(dir) = current {
+            if !dir.starts_with(&root) {
+                break;
+            }
+            state.expanded.insert(dir.to_path_buf());
+            if dir == root {
+                break;
+            }
+            current = dir.parent();
+        }
+        true
+    };
+
+    if !should_reveal {
+        return Ok(());
+    }
+
+    refresh_file_sidebar(editor)?;
+
+    let Some(target_line) = FILE_SIDEBAR_STATE
+        .lock()
+        .unwrap()
+        .entries
+        .iter()
+        .position(|entry| entry.path == target) else {
+            return Ok(());
+        };
+
+    let (view, doc) = current!(editor);
+    let line_start = doc.text().line_to_char(target_line);
+    doc.set_selection(view.id, Selection::point(line_start));
+    Ok(())
+}
+
+fn handle_file_sidebar_action(editor: &mut Editor) -> anyhow::Result<()> {
+    if !is_file_sidebar(editor) {
+        return Ok(());
+    }
+
+    let cursor_line = {
+        let (view, doc) = current!(editor);
+        doc.text()
+            .char_to_line(doc.selection(view.id).primary().cursor(doc.text().slice(..)))
+    };
+
+    let entry = FILE_SIDEBAR_STATE
+        .lock()
+        .unwrap()
+        .entries
+        .get(cursor_line)
+        .cloned()
+        .ok_or_else(|| anyhow!("no sidebar entry under cursor"))?;
+
+    match entry.kind {
+        FileSidebarEntryKind::Directory => {
+            {
+                let mut state = FILE_SIDEBAR_STATE.lock().unwrap();
+                if !state.expanded.insert(entry.path.clone()) {
+                    state.expanded.remove(&entry.path);
+                }
+            }
+            refresh_file_sidebar(editor)?;
+        }
+        FileSidebarEntryKind::File => {
+            let sidebar_view = view!(editor).id;
+            if let Some(view_id) = editor
+                .tree
+                .find_split_in_direction(sidebar_view, tree::Direction::Right)
+            {
+                editor.focus(view_id);
+                editor.open(&entry.path, Action::Replace)?;
+            } else {
+                editor.new_file(Action::VerticalSplit);
+                editor.open(&entry.path, Action::Replace)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn buffer_picker(cx: &mut Context) {

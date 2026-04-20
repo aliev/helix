@@ -231,6 +231,7 @@ pub struct Document {
     /// Current indent style.
     pub indent_style: IndentStyle,
     editor_config: EditorConfig,
+    soft_wrap_override: Option<bool>,
 
     /// The document's default line ending.
     pub line_ending: LineEnding,
@@ -799,6 +800,7 @@ impl Document {
             view_data: Default::default(),
             indent_style: DEFAULT_INDENT,
             editor_config: EditorConfig::default(),
+            soft_wrap_override: None,
             line_ending,
             restore_cursor: false,
             syntax: None,
@@ -2563,6 +2565,7 @@ impl Document {
             .and_then(|soft_wrap| soft_wrap.enable)
             .or(editor_soft_wrap.enable)
             .unwrap_or(false);
+        let enable_soft_wrap = self.soft_wrap_override.unwrap_or(enable_soft_wrap);
         let max_wrap = language_soft_wrap
             .and_then(|soft_wrap| soft_wrap.max_wrap)
             .or(config.soft_wrap.max_wrap)
@@ -2589,6 +2592,10 @@ impl Document {
                 .and_then(|theme| theme.find_highlight("ui.virtual.wrap")),
             soft_wrap_at_text_width,
         }
+    }
+
+    pub fn set_soft_wrap_override(&mut self, soft_wrap_override: Option<bool>) {
+        self.soft_wrap_override = soft_wrap_override;
     }
 
     /// Set the inlay hints for this document and `view_id`.
