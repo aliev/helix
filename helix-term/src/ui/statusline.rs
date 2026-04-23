@@ -15,6 +15,14 @@ use helix_view::editor::StatusLineElement as StatusLineElementID;
 use tui::buffer::Buffer as Surface;
 use tui::text::{Span, Spans};
 
+fn is_file_sidebar_doc(doc: &Document) -> bool {
+    doc.path()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| name == ".hx-files")
+        .unwrap_or(false)
+}
+
 pub struct RenderContext<'a> {
     pub editor: &'a Editor,
     pub doc: &'a Document,
@@ -58,6 +66,27 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     };
 
     surface.set_style(viewport.with_height(1), base_style);
+
+    if is_file_sidebar_doc(context.doc) {
+        let text_style = context
+            .editor
+            .theme
+            .try_get("ui.text.info")
+            .unwrap_or(base_style);
+        let hidden_state = if crate::commands::file_sidebar_show_all().unwrap_or(false) {
+            "on"
+        } else {
+            "off"
+        };
+        let label = format!(" hidden {hidden_state} ");
+        surface.set_string(
+            viewport.x,
+            viewport.y,
+            &label,
+            base_style.patch(text_style),
+        );
+        return;
+    }
 
     // Left side of the status line.
 

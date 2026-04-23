@@ -1203,7 +1203,7 @@ fn goto_window(cx: &mut Context, align: Align) {
     let (view, doc) = current!(cx.editor);
     let view_offset = doc.view_offset(view.id);
 
-    let height = view.inner_height();
+    let height = view.inner_height(doc);
 
     // respect user given count if any
     // - 1 so we have at least one gap in the middle.
@@ -1994,7 +1994,7 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
     let text = doc.text().slice(..);
 
     let cursor = range.cursor(text);
-    let height = view.inner_height();
+    let height = view.inner_height(doc);
 
     let scrolloff = config.scrolloff.min(height.saturating_sub(1) / 2);
     let offset = match direction {
@@ -2095,50 +2095,50 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
 }
 
 fn page_up(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height();
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc);
     scroll(cx, offset, Direction::Backward, false);
 }
 
 fn page_down(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height();
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc);
     scroll(cx, offset, Direction::Forward, false);
 }
 
 fn half_page_up(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height() / 2;
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc) / 2;
     scroll(cx, offset, Direction::Backward, false);
 }
 
 fn half_page_down(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height() / 2;
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc) / 2;
     scroll(cx, offset, Direction::Forward, false);
 }
 
 fn page_cursor_up(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height();
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc);
     scroll(cx, offset, Direction::Backward, true);
 }
 
 fn page_cursor_down(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height();
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc);
     scroll(cx, offset, Direction::Forward, true);
 }
 
 fn page_cursor_half_up(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height() / 2;
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc) / 2;
     scroll(cx, offset, Direction::Backward, true);
 }
 
 fn page_cursor_half_down(cx: &mut Context) {
-    let view = view!(cx.editor);
-    let offset = view.inner_height() / 2;
+    let (view, doc) = current!(cx.editor);
+    let offset = view.inner_height(doc) / 2;
     scroll(cx, offset, Direction::Forward, true);
 }
 
@@ -3447,6 +3447,10 @@ fn is_file_sidebar(editor: &Editor) -> bool {
         .path()
         .map(|path| path == &synthetic_path)
         .unwrap_or(false)
+}
+
+pub(crate) fn file_sidebar_show_all() -> Option<bool> {
+    FILE_SIDEBAR_STATE.lock().ok().map(|state| state.show_all)
 }
 
 fn file_sidebar_root() -> anyhow::Result<PathBuf> {

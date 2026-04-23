@@ -198,7 +198,8 @@ impl View {
         self.area.clip_left(self.gutter_offset(doc)).clip_bottom(1) // -1 for statusline
     }
 
-    pub fn inner_height(&self) -> usize {
+    pub fn inner_height(&self, doc: &Document) -> usize {
+        let _ = doc;
         self.area.clip_bottom(1).height.into() // -1 for statusline
     }
 
@@ -375,7 +376,7 @@ impl View {
         let doc_text = doc.text().slice(..);
         let line = doc_text.char_to_line(doc.view_offset(self.id).anchor.min(doc_text.len_chars()));
         // Saturating subs to make it inclusive zero indexing.
-        (line + self.inner_height())
+        (line + self.inner_height(doc))
             .min(doc_text.len_lines())
             .saturating_sub(1)
     }

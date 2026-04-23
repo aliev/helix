@@ -27,8 +27,8 @@ use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::future::Future;
 use std::fs;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -115,8 +115,7 @@ fn persistent_undo_path(path: &Path, configured_dir: Option<&Path>) -> PathBuf {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "document".to_string());
 
-    persistent_undo_dir(configured_dir)
-        .join(format!("{file_name}-{hash:016x}.json"))
+    persistent_undo_dir(configured_dir).join(format!("{file_name}-{hash:016x}.json"))
 }
 
 fn persistent_undo_dir(configured_dir: Option<&Path>) -> PathBuf {
@@ -1089,7 +1088,10 @@ impl Document {
             let history = self.history.take();
             let serialized = history.serialize(&text);
             self.history.set(history);
-            Some((persistent_undo_path(&path, configured_undo_dir.as_deref()), serialized))
+            Some((
+                persistent_undo_path(&path, configured_undo_dir.as_deref()),
+                serialized,
+            ))
         } else {
             None
         };
