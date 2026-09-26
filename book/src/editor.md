@@ -579,10 +579,10 @@ were written. If the file changes outside the editor — a `git checkout`, anoth
 editor, a formatter — the stored history no longer describes it and is discarded
 the next time the file is opened.
 
-| Key | Description | Default |
-| --- | ----------- | ------- |
+| Key    | Description | Default |
+| ---    | --- | --- |
 | `enable` | Whether to keep undo history across sessions | `false` |
-| `dir` | Where to keep undo files | the `undo` directory inside Helix's [data directory](#data-directory) |
+| `dir`  | Where to keep undo files | the `undo` directory inside Helix's data directory |
 
 Undo files record text that was deleted from the document, so they hold content
 the document itself no longer contains. On unix they are created readable only
@@ -595,12 +595,3 @@ Example:
 [editor.persistent-undo]
 enable = true
 ```
-
-## Data directory
-
-Helix stores various data files in a platform-specific data directory:
-
-- Linux and macOS: `~/.local/share/helix/`
-- Windows: `%AppData%\Roaming\helix\`
-
-The persistent undo history is stored in the `undo` subdirectory within this location.
