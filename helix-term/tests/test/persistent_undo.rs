@@ -32,6 +32,19 @@ async fn test_undo_history_survives_a_restart() -> anyhow::Result<()> {
         .with_config(persistent_undo_config(undo_dir.path()))
         .with_file(file.path(), None)
         .build()?;
+    {
+        // A restored document must not look modified: `set_last_saved_revision`
+        // in `restore` points the document's last-saved revision at the
+        // restored `current`, which is not the root. Without it every
+        // reopened file would show `[+]` and `:q` would refuse, even though
+        // pressing `u` below (the only thing every other test in this file
+        // checks) would still work.
+        let doc = doc!(app.editor);
+        assert!(
+            !doc.is_modified(),
+            "a document with history restored from disk must not be marked modified"
+        );
+    }
     test_key_sequence(
         &mut app,
         Some("u"),
@@ -246,6 +259,41 @@ async fn test_saving_succeeds_when_the_undo_directory_is_unusable() -> anyhow::R
     test_key_sequence(&mut app, Some("A world<esc>:w<ret>"), None, false).await?;
 
     assert_eq!(fs::read_to_string(file.path())?, "hello world\n");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_disabled_persistent_undo_writes_no_undo_file() -> anyhow::Result<()> {
+    // `enable = false` is the default and where every user starts. Even with
+    // `dir` pointed at a real, writable directory, saving must never create
+    // anything in it.
+    let undo_dir = tempfile::tempdir()?;
+    let file = helpers::temp_file_with_contents("hello\n")?;
+
+    let mut config = helpers::test_config();
+    config.editor.persistent_undo = PersistentUndoConfig {
+        enable: false,
+        dir: Some(undo_dir.path().to_path_buf()),
+    };
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config)
+        .with_file(file.path(), None)
+        .build()?;
+    test_key_sequence(&mut app, Some("A world<esc>:w<ret>"), None, false).await?;
+
+    // `create_dir_all` in `write_atomically` runs only on an actual write, so
+    // with persistence disabled the directory is never even created.
+    let entries: Vec<_> = match fs::read_dir(undo_dir.path()) {
+        Ok(read_dir) => read_dir.collect::<Result<Vec<_>, _>>()?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err.into()),
+    };
+    assert!(
+        entries.is_empty(),
+        "persistent undo must not write anything when disabled, found: {entries:?}"
+    );
 
     Ok(())
 }
