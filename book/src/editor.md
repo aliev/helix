@@ -579,15 +579,30 @@ were written. If the file changes outside the editor — a `git checkout`, anoth
 editor, a formatter — the stored history no longer describes it and is discarded
 the next time the file is opened.
 
+History is keyed by the path a document is opened under, normalized but not
+resolved through symlinks. Opening the same file under two different names (for
+example, through a symlink and through its target) therefore keeps two
+independent histories; the content hash still keeps either from ever being
+applied to text it does not match.
+
 | Key      | Description                                  | Default                                            |
 | ---      | ---                                          | ---                                                |
 | `enable` | Whether to keep undo history across sessions | `false`                                            |
 | `dir`    | Where to keep undo files                     | the `undo` directory inside Helix's data directory |
 
+A document's undo file holds its entire history, not a bounded window, and is
+rewritten in full on every save. Enabling this together with
+`[editor.auto-save]`'s `after-delay` saving means that full rewrite happens on
+every debounce interval rather than only when you explicitly save, so the cost
+scales with how long you have been editing the file rather than with the size
+of the edit.
+
 Undo files record text that was deleted from the document, so they hold content
-the document itself no longer contains. On unix they are created readable only
-by their owner; on a shared machine, consider whether the directory they live in
-deserves the same treatment.
+the document itself no longer contains. They are never cleaned up — including
+when the document they belong to is deleted or renamed — so the deleted text
+they hold outlives the document itself. On unix they are created readable only
+by their owner; on a shared machine, consider whether the directory they live
+in deserves the same treatment.
 
 Example:
 

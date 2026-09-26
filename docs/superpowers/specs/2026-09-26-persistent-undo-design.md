@@ -91,22 +91,31 @@ The boundary: **helix-core knows how to turn a `History` into flat data and
 nothing about files; helix-view knows where the file lives and when to touch it
 and nothing about `History` internals.** Both halves are tested independently.
 
-### Upstream edits (~25 lines, every hunk append-shaped)
+### Upstream edits (99 insertions, 2 deletions across 11 files; every hunk
+either pure addition or a one-line import-list reflow)
+
+Measured with `git diff --stat 079a789e..HEAD` plus per-file inspection; these
+numbers are checked, not estimated, and should be recomputed the same way if
+this table ever goes stale again.
 
 ```
-helix-core/src/transaction.rs      +1   mod persist;
-helix-core/src/history.rs          +2   mod persist;  pub use persist::SerializedHistory;
-helix-view/src/lib.rs              +1   pub mod persistent_undo;
-helix-view/Cargo.toml              +1   sha2 = "0.11"   (already in the tree via helix-loader)
-helix-view/src/editor.rs           +3   use + Config field + Default line
-helix-view/src/editor.rs           +7   DocumentDidSave dispatch in flush_writes
-helix-view/src/events.rs           +7   DocumentDidSave appended to the events!{} block
-helix-view/src/handlers.rs         +1   persistent_undo::register_hooks();
-helix-term/src/events.rs           +2   import + register_event::<DocumentDidSave>();
-helix-term/src/application.rs      +6   dispatch at the end of handle_document_write
-helix-term/tests/integration.rs    +1   mod persistent_undo;
-book/src/editor.md                 +~15 documentation
+helix-core/src/transaction.rs        +2       pub(crate) mod persist;  (plus a blank line)
+helix-core/src/history.rs            +4       mod persist;  pub use persist::{InvalidHistory, SerializedHistory};
+helix-view/src/lib.rs                +1       pub mod persistent_undo;
+helix-view/Cargo.toml                +1       sha2 = "0.11"   (already in the tree via helix-loader)
+helix-view/src/editor.rs        +16 / -1       use + Config field + Default line + DocumentDidSave dispatch in flush_writes
+helix-view/src/events.rs             +18      DocumentDidSave appended to the events!{} block
+helix-view/src/handlers.rs           +1       persistent_undo::register_hooks();
+helix-term/src/events.rs         +3 / -1       import (reflowed to fit DocumentDidSave) + register_event::<DocumentDidSave>();
+helix-term/src/application.rs        +8       dispatch at the end of handle_document_write
+helix-term/tests/integration.rs      +1       mod persistent_undo;
+book/src/editor.md                   +44      documentation
 ```
+
+`helix-term/tests/test/helpers.rs` is not in this list: an earlier draft of
+this patch removed a now-stale `#[allow(dead_code)]` there, which was reverted
+as unnecessary — the attribute is harmless on a now-used item, and this file
+was never touched by the design.
 
 For comparison, the draft is 377 lines across 4 files, ~80 of them inside
 `Document::save_impl` and `Document::open`.
@@ -297,7 +306,7 @@ write leaves truncated JSON, which on the next open looks like lost history.
 | Case | Behaviour |
 |---|---|
 | Two helix instances on one file | `rename` is atomic; last writer wins; corruption is impossible |
-| Symlink / hardlink | The key derives from `canonicalize()`, as in `Editor::open`, so one physical file maps to one undo file |
+| Symlink / hardlink | The key derives from `helix_stdx::path::canonicalize()`, which normalizes a path without resolving symlinks (that is deliberate: it must not touch the filesystem, so a broken or not-yet-created link keys consistently before and after the target exists). The same physical file opened under two different names therefore gets two independent undo files. This is safe rather than dangerous: the content hash still refuses to apply either history to the wrong text, so the worst case is "no history under the second name" |
 | `:w other.txt` (save-as) | Dispatch happens after `set_doc_path`, so history is written under the new path; the old path's undo file stays valid |
 | Scratch buffer | No path — ignored |
 | `:reload` | The undo file is left alone until the next `:w` |
