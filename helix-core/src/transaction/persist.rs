@@ -43,6 +43,17 @@ impl SerializedTransaction {
             selection,
         })
     }
+
+    /// The change set's `(len, len_after)`, i.e. the document lengths it
+    /// requires before and produces after. `transaction::persist` is the only
+    /// module with access to `ChangeSet`'s private `len` and `len_after` (see
+    /// the module doc comment), so `history::persist` goes through this
+    /// accessor to validate the length invariants between a revision's
+    /// transaction and inversion, and between consecutive revisions, before
+    /// either is converted into a real `Transaction`.
+    pub(crate) fn change_set_lengths(&self) -> (usize, usize) {
+        (self.changes.len, self.changes.len_after)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

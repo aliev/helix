@@ -16,7 +16,10 @@ use crate::transaction::persist::SerializedTransaction;
 /// moved on in the meantime.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedHistory {
-    pub current: usize,
+    // `pub(crate)`, not `pub`: helix-view treats `SerializedHistory` opaquely,
+    // only ever obtaining one from `to_serialized` and handing it to
+    // `from_serialized` or to `serde`, neither of which needs field access.
+    pub(crate) current: usize,
     revisions: Vec<SerializedRevision>,
 }
 
@@ -32,17 +35,25 @@ struct SerializedRevision {
 impl History {
     /// Converts the history into plain data, pointing `current` at the revision
     /// whose contents reached the disk.
-    pub fn to_serialized(&self, current: usize) -> SerializedHistory {
+    ///
+    /// Returns `None` if `current` is not a valid revision of this history,
+    /// rather than panicking or clamping it to one: a clamped `current` would
+    /// silently pair the written text with whatever revision happened to be
+    /// last, which is the one wrong answer a caller can least afford here.
+    /// Callers such as `persistent_undo::persist` are expected to treat `None`
+    /// as "do not persist" and log accordingly.
+    pub fn to_serialized(&self, current: usize) -> Option<SerializedHistory> {
+        if current >= self.revisions.len() {
+            return None;
+        }
+
         // Revisions are timed with `Instant`, which has no absolute reference
         // point, so they are converted to wall clock time against a single
         // reference pair taken here.
         let reference_instant = Instant::now();
         let reference_system = SystemTime::now();
 
-        debug_assert!(current < self.revisions.len());
-        let current = current.min(self.revisions.len() - 1);
-
-        SerializedHistory {
+        Some(SerializedHistory {
             current,
             revisions: self
                 .revisions
@@ -59,7 +70,7 @@ impl History {
                     ),
                 })
                 .collect(),
-        }
+        })
     }
 
     /// Rebuilds a history from plain data, rejecting anything that would make
@@ -107,6 +118,49 @@ impl History {
                     return Err(InvalidHistory::new(
                         "revision last child does not agree with its parent",
                     ));
+                }
+            }
+
+            // Length invariants guaranteed by `commit_revision_at_timestamp`
+            // (history.rs) for every non-root revision, checked here against
+            // the raw serialized lengths, before either change set is turned
+            // into a real `Transaction` that `apply` would trust. None of this
+            // is caught by `SerializedChangeSet::into_change_set`, which only
+            // checks a change set against its own operation list.
+            if index != 0 {
+                let (transaction_len, transaction_len_after) =
+                    revision.transaction.change_set_lengths();
+                let (inversion_len, inversion_len_after) = revision.inversion.change_set_lengths();
+
+                // `Transaction::invert` builds the inversion by walking the
+                // transaction's own operations, which makes its length the
+                // transaction's length-after and its length-after the
+                // transaction's length: it is the same document transition,
+                // run backwards. A mismatch here could not have come from
+                // `commit_revision_at_timestamp`, only from a hand-edited or
+                // corrupted file.
+                if inversion_len != transaction_len_after || inversion_len_after != transaction_len
+                {
+                    return Err(InvalidHistory::new(
+                        "revision inversion length disagrees with its transaction",
+                    ));
+                }
+
+                // A revision's transaction is built against the document as it
+                // stood at its parent revision, so its required length must
+                // match the length the parent's transaction produces. The root
+                // is exempt: its transaction is a dummy empty change set (see
+                // `History::default`) that does not describe the document's
+                // real initial length.
+                if revision.parent != 0 {
+                    let (_, parent_len_after) = serialized.revisions[revision.parent]
+                        .transaction
+                        .change_set_lengths();
+                    if transaction_len != parent_len_after {
+                        return Err(InvalidHistory::new(
+                            "revision transaction length disagrees with its parent's",
+                        ));
+                    }
                 }
             }
         }
@@ -270,8 +324,25 @@ mod tests {
         (history, state)
     }
 
+    /// "hello\n" with " world" appended, then "!" appended after that with no
+    /// undo in between: revision 2's parent is revision 1, not the root,
+    /// which `branching_history` above never exercises (both of its non-root
+    /// revisions are children of the root).
+    fn sequential_history() -> (History, State) {
+        let mut state = State {
+            doc: Rope::from("hello\n"),
+            selection: Selection::point(0),
+        };
+        let mut history = History::default();
+
+        commit(&mut history, &mut state, 5, 5, " world");
+        commit(&mut history, &mut state, 11, 11, "!");
+
+        (history, state)
+    }
+
     fn roundtrip(history: &History, current: usize) -> History {
-        let json = serde_json::to_string(&history.to_serialized(current)).unwrap();
+        let json = serde_json::to_string(&history.to_serialized(current).unwrap()).unwrap();
         History::from_serialized(serde_json::from_str(&json).unwrap()).unwrap()
     }
 
@@ -293,6 +364,16 @@ mod tests {
     }
 
     #[test]
+    fn to_serialized_rejects_a_revision_out_of_range() {
+        // The caller (`persistent_undo::persist`) is expected to skip
+        // persisting and log a warning on `None` rather than ever panicking or
+        // silently pairing the written text with an arbitrary revision.
+        let (history, _state) = branching_history();
+        assert!(history.to_serialized(3).is_none());
+        assert!(history.to_serialized(2).is_some());
+    }
+
+    #[test]
     fn restores_the_revision_that_was_on_disk_not_the_latest_one() {
         let (history, _state) = branching_history();
         // A save that started at revision 1 while the buffer moved on to 2.
@@ -302,7 +383,7 @@ mod tests {
 
     #[test]
     fn rejects_an_empty_history() {
-        let mut serialized = branching_history().0.to_serialized(0);
+        let mut serialized = branching_history().0.to_serialized(0).unwrap();
         serialized.revisions.clear();
         assert!(History::from_serialized(serialized).is_err());
     }
@@ -310,7 +391,7 @@ mod tests {
     #[test]
     fn rejects_a_current_revision_out_of_bounds() {
         let (history, _state) = branching_history();
-        let mut serialized = history.to_serialized(2);
+        let mut serialized = history.to_serialized(2).unwrap();
         serialized.current = 99;
         assert!(History::from_serialized(serialized).is_err());
     }
@@ -320,7 +401,7 @@ mod tests {
         // `lowest_common_ancestor` walks parents until they meet and relies on
         // them strictly decreasing; a forward pointer makes it loop forever.
         let (history, _state) = branching_history();
-        let mut serialized = history.to_serialized(2);
+        let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[1].parent = 2;
         assert!(History::from_serialized(serialized).is_err());
     }
@@ -328,7 +409,7 @@ mod tests {
     #[test]
     fn rejects_a_last_child_out_of_bounds() {
         let (history, _state) = branching_history();
-        let mut serialized = history.to_serialized(2);
+        let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[0].last_child = Some(99);
         assert!(History::from_serialized(serialized).is_err());
     }
@@ -339,7 +420,7 @@ mod tests {
         // (or itself) would silently corrupt `redo`, which applies
         // `revisions[last_child].transaction` unconditionally.
         let (history, _state) = branching_history();
-        let mut serialized = history.to_serialized(2);
+        let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[2].last_child = Some(0);
         assert!(History::from_serialized(serialized).is_err());
     }
@@ -351,7 +432,7 @@ mod tests {
         // about the shape of the tree even though both are individually in
         // bounds and correctly ordered.
         let (history, _state) = branching_history();
-        let mut serialized = history.to_serialized(2);
+        let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[1].last_child = Some(2);
         assert!(History::from_serialized(serialized).is_err());
     }
@@ -363,7 +444,7 @@ mod tests {
         // every legitimately committed non-root revision has one, but nothing
         // stops a corrupted file from setting it to `null`.
         let (history, _state) = branching_history();
-        let mut json = serde_json::to_value(history.to_serialized(2)).unwrap();
+        let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
         json["revisions"][1]["inversion"]["selection"] = serde_json::Value::Null;
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
         let error = History::from_serialized(serialized).unwrap_err();
@@ -376,16 +457,72 @@ mod tests {
         // `changes_iter()`, which yields nothing for a change set made only of
         // `Retain` operations.
         let (history, _state) = branching_history();
-        let mut json = serde_json::to_value(history.to_serialized(2)).unwrap();
+        let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
         let len = json["revisions"][1]["transaction"]["changes"]["len"]
             .as_u64()
             .unwrap();
         json["revisions"][1]["transaction"]["changes"]["changes"] =
             serde_json::json!([{ "Retain": len }]);
         json["revisions"][1]["transaction"]["changes"]["len_after"] = serde_json::json!(len);
+        // The inversion is adjusted to match the now-shorter transaction, so
+        // this trips only the "no changes" invariant under test here and not
+        // the transaction/inversion length cross-check.
+        json["revisions"][1]["inversion"]["changes"]["changes"] =
+            serde_json::json!([{ "Retain": len }]);
+        json["revisions"][1]["inversion"]["changes"]["len"] = serde_json::json!(len);
+        json["revisions"][1]["inversion"]["changes"]["len_after"] = serde_json::json!(len);
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
         let error = History::from_serialized(serialized).unwrap_err();
         assert!(error.to_string().contains("no changes"));
+    }
+
+    #[test]
+    fn rejects_a_revision_whose_inversion_length_disagrees_with_its_transaction() {
+        // `Transaction::invert` guarantees an inversion's length equals its
+        // transaction's length-after; swapping in another revision's
+        // (individually well-formed) inversion breaks that. Revision 2's
+        // inversion has length 7 here, which disagrees with revision 1's
+        // transaction's length-after of 12; its length-after (6) happens to
+        // still agree with revision 1's transaction's length, isolating this
+        // from the other half of the same invariant.
+        let (history, _state) = branching_history();
+        let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
+        let other_inversion = json["revisions"][2]["inversion"].clone();
+        json["revisions"][1]["inversion"] = other_inversion;
+        let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
+        let error = History::from_serialized(serialized).unwrap_err();
+        assert!(error.to_string().contains("disagrees with its transaction"));
+    }
+
+    #[test]
+    fn rejects_a_revision_whose_inversion_length_after_disagrees_with_its_transaction() {
+        // The other half of the same invariant: an inversion's length-after
+        // must equal its transaction's length. Only `len_after` is corrupted
+        // here; `len` is left agreeing with the transaction's length-after.
+        let (history, _state) = branching_history();
+        let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
+        json["revisions"][1]["inversion"]["changes"]["len_after"] = serde_json::json!(99);
+        let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
+        let error = History::from_serialized(serialized).unwrap_err();
+        assert!(error.to_string().contains("disagrees with its transaction"));
+    }
+
+    #[test]
+    fn rejects_a_revision_whose_transaction_length_disagrees_with_its_parent() {
+        // Revision 2's parent here is revision 1, not the root (unlike
+        // `branching_history`, where both non-root revisions are children of
+        // the root and this invariant is never exercised): its transaction's
+        // required length must match what revision 1's transaction produces.
+        // `inversion.len_after` is corrected alongside `transaction.len` so
+        // that only the parent-continuity invariant is under test, not the
+        // inversion/transaction cross-check above.
+        let (history, _state) = sequential_history();
+        let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
+        json["revisions"][2]["transaction"]["changes"]["len"] = serde_json::json!(99);
+        json["revisions"][2]["inversion"]["changes"]["len_after"] = serde_json::json!(99);
+        let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
+        let error = History::from_serialized(serialized).unwrap_err();
+        assert!(error.to_string().contains("disagrees with its parent"));
     }
 
     #[test]
@@ -394,7 +531,7 @@ mod tests {
         // timestamp. A corrupted file need not have ordered `timestamp_unix_ms`
         // values, so the restored sequence must be non-decreasing regardless.
         let (history, _state) = branching_history();
-        let mut serialized = history.to_serialized(2);
+        let mut serialized = history.to_serialized(2).unwrap();
         let len = serialized.revisions.len();
         for (index, revision) in serialized.revisions.iter_mut().enumerate() {
             // Deliberately scrambled: later revisions claim earlier timestamps.
