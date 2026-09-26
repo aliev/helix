@@ -52,6 +52,15 @@ struct UndoFile {
     history: SerializedHistory,
 }
 
+/// Just enough of [`UndoFile`] to check the format version before the rest of
+/// the file is parsed. Unknown fields are ignored by default, so this
+/// deserializes successfully against any version's file shape, including one
+/// whose body is not a `SerializedHistory` at all.
+#[derive(Debug, Deserialize)]
+struct UndoFileVersion {
+    version: u32,
+}
+
 fn undo_dir(config: &PersistentUndoConfig) -> PathBuf {
     match &config.dir {
         Some(dir) => helix_stdx::path::expand_tilde(dir).into_owned(),
@@ -90,6 +99,39 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// The result of parsing an undo file's raw contents, distinguishing a version
+/// mismatch from unreadable JSON so that `read`'s two "discarding" log
+/// messages, and the tests that pin them, stay meaningful.
+#[derive(Debug)]
+enum ParsedUndoFile {
+    /// Neither the version probe nor the full body could be parsed as JSON.
+    Unreadable(serde_json::Error),
+    /// The version probe parsed, but did not match [`FORMAT_VERSION`]. The
+    /// full body is deliberately never parsed in this case: a different
+    /// format version is free to change its shape entirely.
+    VersionMismatch(u32),
+    Ok(UndoFile),
+}
+
+/// Parses `contents` as an undo file, checking the format version before the
+/// rest of the body so that a future format version with a different shape is
+/// reported as a version mismatch rather than as unreadable JSON.
+fn parse_undo_file(contents: &str) -> ParsedUndoFile {
+    let version = match serde_json::from_str::<UndoFileVersion>(contents) {
+        Ok(probe) => probe.version,
+        Err(err) => return ParsedUndoFile::Unreadable(err),
+    };
+
+    if version != FORMAT_VERSION {
+        return ParsedUndoFile::VersionMismatch(version);
+    }
+
+    match serde_json::from_str(contents) {
+        Ok(undo_file) => ParsedUndoFile::Ok(undo_file),
+        Err(err) => ParsedUndoFile::Unreadable(err),
+    }
+}
+
 /// Reads the history stored for `path`, or `None` when there is nothing usable.
 ///
 /// A missing file is the ordinary case for a document opened for the first time
@@ -111,9 +153,16 @@ fn read(config: &PersistentUndoConfig, path: &Path, text: &Rope) -> Option<Histo
         }
     };
 
-    let undo_file: UndoFile = match serde_json::from_str(&contents) {
-        Ok(undo_file) => undo_file,
-        Err(err) => {
+    let undo_file = match parse_undo_file(&contents) {
+        ParsedUndoFile::Ok(undo_file) => undo_file,
+        ParsedUndoFile::VersionMismatch(version) => {
+            log::warn!(
+                "discarding undo history '{}' written in format version {version}",
+                undo_file_path.display()
+            );
+            return None;
+        }
+        ParsedUndoFile::Unreadable(err) => {
             log::warn!(
                 "discarding unreadable undo history '{}': {err}",
                 undo_file_path.display()
@@ -121,15 +170,6 @@ fn read(config: &PersistentUndoConfig, path: &Path, text: &Rope) -> Option<Histo
             return None;
         }
     };
-
-    if undo_file.version != FORMAT_VERSION {
-        log::warn!(
-            "discarding undo history '{}' written in format version {}",
-            undo_file_path.display(),
-            undo_file.version
-        );
-        return None;
-    }
 
     if undo_file.content_sha256 != content_hash(text) {
         log::debug!(
@@ -228,10 +268,12 @@ fn restore(editor: &mut Editor, doc_id: DocumentId) {
     let current = history.current_revision();
     doc.history.set(history);
 
-    // Without this the document would look modified the moment it was opened,
-    // since its current revision no longer matches the root. The file's mtime
-    // rather than the current time, so that the external-modification guard in
-    // `Document::save_impl` keeps working.
+    // Only the revision needs updating here: `set_path` already picked up the
+    // file's mtime into `last_saved_time` when the document was opened, with
+    // the same `SystemTime::now()` fallback used below. It is re-read from the
+    // file rather than reused because `last_saved_time` has no getter, not
+    // because the external-modification guard in `Document::save_impl` would
+    // otherwise break.
     let save_time = path
         .metadata()
         .and_then(|metadata| metadata.modified())
@@ -259,10 +301,27 @@ fn persist(editor: &mut Editor, doc_id: DocumentId, revision: usize, text: &Rope
     };
 
     // The history lives in a `Cell` because parts of it are handed out by
-    // reference elsewhere; take it out and put it straight back.
+    // reference elsewhere; take it out and put it straight back. This happens
+    // before `revision` is used for anything, so a `revision` that turns out
+    // to be out of range still leaves the document's in-memory history intact
+    // rather than replaced by `History::default()`.
     let history = doc.history.take();
     let serialized = history.to_serialized(revision);
     doc.history.set(history);
+
+    let Some(serialized) = serialized else {
+        // `revision` is `DocumentSavedEvent::revision`, which was a valid
+        // revision of this same history when the save started; it should
+        // never be out of range here. But pairing the written text with an
+        // arbitrary revision (or panicking) would be worse than skipping the
+        // write, so this is a hard requirement rather than a debug assertion.
+        log::warn!(
+            "not persisting undo history for '{}': revision {revision} is not a valid revision \
+             of the document's history",
+            path.display()
+        );
+        return;
+    };
 
     write(&config, path, text, serialized);
 }
@@ -320,7 +379,7 @@ mod tests {
         let path = Path::new("/documents/hello.txt");
         let text = Rope::from("hello world\n");
 
-        write(&config, path, &text, history().to_serialized(1));
+        write(&config, path, &text, history().to_serialized(1).unwrap());
         let restored = read(&config, path, &text).expect("history should be restored");
 
         assert_eq!(restored.current_revision(), 1);
@@ -347,7 +406,7 @@ mod tests {
             &config,
             path,
             &Rope::from("hello world\n"),
-            history().to_serialized(1),
+            history().to_serialized(1).unwrap(),
         );
 
         assert!(read(&config, path, &Rope::from("something else\n")).is_none());
@@ -360,7 +419,7 @@ mod tests {
         let path = Path::new("/documents/hello.txt");
         let text = Rope::from("hello world\n");
 
-        write(&config, path, &text, history().to_serialized(1));
+        write(&config, path, &text, history().to_serialized(1).unwrap());
 
         let stored = undo_file(&config, path);
         let contents = fs::read_to_string(&stored).unwrap();
@@ -374,13 +433,34 @@ mod tests {
     }
 
     #[test]
+    fn a_version_mismatch_is_detected_before_the_body_is_parsed() {
+        // A hypothetical format version 2 with a completely different body
+        // shape must still be recognized as a version mismatch, not reported
+        // as unreadable JSON: `version` is checked against a probe struct
+        // before the rest of the file is parsed as a `UndoFile`.
+        let contents = r#"{"version":2,"totally":"different","shape":[1,2,3]}"#;
+        assert!(matches!(
+            parse_undo_file(contents),
+            ParsedUndoFile::VersionMismatch(2)
+        ));
+    }
+
+    #[test]
+    fn unparsable_json_is_reported_as_unreadable() {
+        assert!(matches!(
+            parse_undo_file("not json"),
+            ParsedUndoFile::Unreadable(_)
+        ));
+    }
+
+    #[test]
     fn discards_a_truncated_history() {
         let dir = tempfile::tempdir().unwrap();
         let config = config(dir.path());
         let path = Path::new("/documents/hello.txt");
         let text = Rope::from("hello world\n");
 
-        write(&config, path, &text, history().to_serialized(1));
+        write(&config, path, &text, history().to_serialized(1).unwrap());
 
         let stored = undo_file(&config, path);
         let contents = fs::read_to_string(&stored).unwrap();
@@ -414,7 +494,7 @@ mod tests {
             &config,
             path,
             &Rope::from("hello world\n"),
-            history().to_serialized(1),
+            history().to_serialized(1).unwrap(),
         );
 
         let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
@@ -438,7 +518,7 @@ mod tests {
             &config,
             Path::new("/documents/hello.txt"),
             &Rope::from("hello world\n"),
-            history().to_serialized(1),
+            history().to_serialized(1).unwrap(),
         );
     }
 
@@ -455,7 +535,7 @@ mod tests {
             &config,
             path,
             &Rope::from("hello world\n"),
-            history().to_serialized(1),
+            history().to_serialized(1).unwrap(),
         );
 
         // Undo files hold text deleted from the document, including text the
