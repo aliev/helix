@@ -12,11 +12,16 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use helix_core::history::{History, SerializedHistory};
 use helix_core::Rope;
+use helix_event::register_hook;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::events::{DocumentDidOpen, DocumentDidSave};
+use crate::{DocumentId, Editor};
 
 /// Version of the on-disk format. Bump this whenever the representation
 /// changes: a history written by a different version is discarded rather than
@@ -199,6 +204,74 @@ fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     file.persist(path).map_err(|err| err.error)?;
 
     Ok(())
+}
+
+/// Restores a document's history when it is opened.
+fn restore(editor: &mut Editor, doc_id: DocumentId) {
+    // Cloned out of the config guard so that the document can be borrowed
+    // mutably below.
+    let config = editor.config().persistent_undo.clone();
+    if !config.enable {
+        return;
+    }
+
+    let Some(doc) = editor.document_mut(doc_id) else {
+        return;
+    };
+    let Some(path) = doc.path().map(PathBuf::from) else {
+        return;
+    };
+    let Some(history) = read(&config, &path, doc.text()) else {
+        return;
+    };
+
+    let current = history.current_revision();
+    doc.history.set(history);
+
+    // Without this the document would look modified the moment it was opened,
+    // since its current revision no longer matches the root. The file's mtime
+    // rather than the current time, so that the external-modification guard in
+    // `Document::save_impl` keeps working.
+    let save_time = path
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or_else(|_| SystemTime::now());
+    doc.set_last_saved_revision(current, save_time);
+}
+
+/// Stores a document's history after it has been written to disk.
+fn persist(editor: &mut Editor, doc_id: DocumentId, revision: usize, text: &Rope) {
+    let config = editor.config().persistent_undo.clone();
+    if !config.enable {
+        return;
+    }
+
+    let Some(doc) = editor.document_mut(doc_id) else {
+        return;
+    };
+    let Some(path) = doc.path().map(PathBuf::from) else {
+        return;
+    };
+
+    // The history lives in a `Cell` because parts of it are handed out by
+    // reference elsewhere; take it out and put it straight back.
+    let history = doc.history.take();
+    let serialized = history.to_serialized(revision);
+    doc.history.set(history);
+
+    write(&config, &path, text, serialized);
+}
+
+pub fn register_hooks() {
+    register_hook!(move |event: &mut DocumentDidOpen<'_>| {
+        restore(event.editor, event.doc);
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentDidSave<'_>| {
+        persist(event.editor, event.doc, event.revision, event.text);
+        Ok(())
+    });
 }
 
 #[cfg(test)]

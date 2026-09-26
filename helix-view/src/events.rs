@@ -25,6 +25,17 @@ events! {
     // called **after** a document loses focus (but not when its closed)
     DocumentFocusLost<'a> { editor: &'a mut Editor, doc: DocumentId }
 
+    // called **after** a document's contents have reached the disk
+    DocumentDidSave<'a> {
+        editor: &'a mut Editor,
+        doc: DocumentId,
+        // The revision whose contents were written.
+        revision: usize,
+        // The text that was written, which is not necessarily the document's
+        // current text: saving is asynchronous.
+        text: &'a Rope
+    }
+
     LanguageServerInitialized<'a> {
         editor: &'a mut Editor,
         server_id: LanguageServerId

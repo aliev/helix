@@ -1,10 +1,11 @@
+use crate::persistent_undo::PersistentUndoConfig;
 use crate::{
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
     document::{
         DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
     },
-    events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
+    events::{DocumentDidClose, DocumentDidOpen, DocumentDidSave, DocumentFocusLost},
     graphics::{CursorKind, Rect},
     handlers::Handlers,
     info::Info,
@@ -434,6 +435,8 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
+    /// Persistent undo history configuration.
+    pub persistent_undo: PersistentUndoConfig,
 }
 
 /// User-facing configuration for `[editor.workspace-trust]`.
@@ -1240,6 +1243,7 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
             workspace_trust: WorkspaceTrustConfig::default(),
+            persistent_undo: PersistentUndoConfig::default(),
         }
     }
 }
@@ -2523,6 +2527,16 @@ impl Editor {
 
                 let doc = doc_mut!(self, &save_event.doc_id);
                 doc.set_last_saved_revision(save_event.revision, save_event.save_time);
+
+                // `:x`, `:wq` and `:wqa` drain the queue here instead of going
+                // through `Application::handle_document_write`, so the event has
+                // to be dispatched from both places.
+                helix_event::dispatch(DocumentDidSave {
+                    editor: self,
+                    doc: save_event.doc_id,
+                    revision: save_event.revision,
+                    text: &save_event.text,
+                });
             }
         }
 

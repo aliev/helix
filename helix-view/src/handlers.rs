@@ -61,4 +61,5 @@ impl Handlers {
 pub fn register_hooks(handlers: &Handlers) {
     lsp::register_hooks(handlers);
     word_index::register_hooks(handlers);
+    crate::persistent_undo::register_hooks();
 }

@@ -654,6 +654,13 @@ impl Application {
             "'{}' written, {lines}L {size}",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
         ));
+
+        helix_event::dispatch(helix_view::events::DocumentDidSave {
+            editor: &mut self.editor,
+            doc: doc_save_event.doc_id,
+            revision: doc_save_event.revision,
+            text: &doc_save_event.text,
+        });
     }
 
     #[inline(always)]
