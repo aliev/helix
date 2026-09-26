@@ -24,6 +24,7 @@
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
 - [`[editor.word-completion]` Section](#editorword-completion-section)
 - [`[editor.workspace-trust]` Section](#editorworkspace-trust-section)
+- [`[editor.persistent-undo]` Section](#editorpersistent-undo-section)
 
 ### `[editor]` Section
 
@@ -566,3 +567,40 @@ level = "servers"
 # under a matching path. `~` and environment variables are expanded.
 trusted = ["~/src/github.com/me/*"]
 ```
+
+### `[editor.persistent-undo]` Section
+
+Keeps a document's undo history across editing sessions. With this enabled,
+reopening a file and pressing `u` walks back through edits made before the
+editor was last closed.
+
+History is written when a document is saved and is bound to the contents that
+were written. If the file changes outside the editor — a `git checkout`, another
+editor, a formatter — the stored history no longer describes it and is discarded
+the next time the file is opened.
+
+| Key | Description | Default |
+| --- | ----------- | ------- |
+| `enable` | Whether to keep undo history across sessions | `false` |
+| `dir` | Where to keep undo files | the `undo` directory inside Helix's [data directory](#data-directory) |
+
+Undo files record text that was deleted from the document, so they hold content
+the document itself no longer contains. On unix they are created readable only
+by their owner; on a shared machine, consider whether the directory they live in
+deserves the same treatment.
+
+Example:
+
+```toml
+[editor.persistent-undo]
+enable = true
+```
+
+## Data directory
+
+Helix stores various data files in a platform-specific data directory:
+
+- Linux and macOS: `~/.local/share/helix/`
+- Windows: `%AppData%\Roaming\helix\`
+
+The persistent undo history is stored in the `undo` subdirectory within this location.
