@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 mod persist;
 
-pub use persist::InvalidHistory;
+pub use persist::{InvalidHistory, SerializedHistory};
 
 #[derive(Debug, Clone)]
 pub struct State {
