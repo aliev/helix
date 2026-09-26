@@ -73,12 +73,14 @@ impl History {
         }
 
         let len = serialized.revisions.len();
-        let timestamps = restore_timestamps(&serialized.revisions);
-        let mut revisions = Vec::with_capacity(len);
 
-        for (index, (revision, timestamp)) in
-            serialized.revisions.into_iter().zip(timestamps).enumerate()
-        {
+        // Validate the graph's shape against the raw indices before anything is
+        // consumed or converted. `last_child` is checked here, rather than
+        // alongside `parent` below, because confirming it agrees with the
+        // target's `parent` needs random access into revisions the forward
+        // build loop below has not reached (and, for a child index, has not
+        // yet built) when it is looking at an earlier one.
+        for (index, revision) in serialized.revisions.iter().enumerate() {
             // The root is its own parent; everything else must point strictly
             // backwards, or `lowest_common_ancestor` never terminates.
             let parent_is_sound = if index == 0 {
@@ -89,15 +91,57 @@ impl History {
             if !parent_is_sound {
                 return Err(InvalidHistory::new("revision parent is out of bounds"));
             }
-            if revision.last_child.is_some_and(|child| child >= len) {
-                return Err(InvalidHistory::new("revision last child is out of bounds"));
+
+            if let Some(child) = revision.last_child {
+                // A last child must be a later revision. One pointing at itself,
+                // an ancestor, or an unrelated earlier revision would silently
+                // corrupt `redo`, which applies `revisions[last_child].transaction`
+                // unconditionally.
+                if child <= index || child >= len {
+                    return Err(InvalidHistory::new("revision last child is out of bounds"));
+                }
+                // The pointer must be reciprocated. Without this, `last_child`
+                // and `parent` can disagree about the shape of the tree even
+                // though both are individually in bounds.
+                if serialized.revisions[child].parent != index {
+                    return Err(InvalidHistory::new(
+                        "revision last child does not agree with its parent",
+                    ));
+                }
+            }
+        }
+
+        let timestamps = restore_timestamps(&serialized.revisions);
+        let mut revisions = Vec::with_capacity(len);
+
+        for (index, (revision, timestamp)) in
+            serialized.revisions.into_iter().zip(timestamps).enumerate()
+        {
+            let transaction = revision.transaction.into_transaction()?;
+            let inversion = revision.inversion.into_transaction()?;
+
+            // Every revision but the root was committed through
+            // `commit_revision_at_timestamp` (history.rs), which always gives the
+            // inversion a selection and always records at least one change; the
+            // root's transaction and inversion are legitimately empty and
+            // selection-less. `last_edit_pos` (history.rs) assumes both
+            // unconditionally for any non-root current revision and panics
+            // otherwise, reachable through the ordinary `goto_last_modification`
+            // command.
+            if index != 0 {
+                if inversion.selection().is_none() {
+                    return Err(InvalidHistory::new("revision inversion has no selection"));
+                }
+                if transaction.changes_iter().next().is_none() {
+                    return Err(InvalidHistory::new("revision transaction has no changes"));
+                }
             }
 
             revisions.push(Revision {
                 parent: revision.parent,
                 last_child: revision.last_child.and_then(NonZeroUsize::new),
-                transaction: revision.transaction.into_transaction()?,
-                inversion: revision.inversion.into_transaction()?,
+                transaction,
+                inversion,
                 timestamp,
             });
         }
@@ -151,6 +195,12 @@ fn restore_timestamps(revisions: &[SerializedRevision]) -> Vec<Instant> {
         .find_map(|probe| now_instant.checked_sub(*probe))
         .unwrap_or(now_instant);
 
+    // `jump_instant`'s binary search (history.rs) assumes revisions are sorted
+    // by timestamp, but a corrupted file's `timestamp_unix_ms` values need not
+    // be in order. Rather than rejecting an otherwise-valid history over its
+    // least load-bearing field, ordering is enforced by construction: each
+    // restored instant is clamped to be at least the previous one.
+    let mut running_max = earliest;
     revisions
         .iter()
         .map(|revision| {
@@ -160,10 +210,12 @@ fn restore_timestamps(revisions: &[SerializedRevision]) -> Vec<Instant> {
             let age = now_system
                 .duration_since(timestamp)
                 .unwrap_or(Duration::ZERO);
-            now_instant
+            let candidate = now_instant
                 .checked_sub(age)
                 .filter(|instant| *instant >= earliest)
-                .unwrap_or(earliest)
+                .unwrap_or(earliest);
+            running_max = running_max.max(candidate);
+            running_max
         })
         .collect()
 }
@@ -279,6 +331,80 @@ mod tests {
         let mut serialized = history.to_serialized(2);
         serialized.revisions[0].last_child = Some(99);
         assert!(History::from_serialized(serialized).is_err());
+    }
+
+    #[test]
+    fn rejects_a_last_child_pointing_backward() {
+        // A last child must be a later revision; one pointing at an ancestor
+        // (or itself) would silently corrupt `redo`, which applies
+        // `revisions[last_child].transaction` unconditionally.
+        let (history, _state) = branching_history();
+        let mut serialized = history.to_serialized(2);
+        serialized.revisions[2].last_child = Some(0);
+        assert!(History::from_serialized(serialized).is_err());
+    }
+
+    #[test]
+    fn rejects_a_last_child_whose_target_disagrees_about_its_parent() {
+        // Revision 1 claims revision 2 as its child, but revision 2's own
+        // `parent` still points at the root: `last_child` and `parent` disagree
+        // about the shape of the tree even though both are individually in
+        // bounds and correctly ordered.
+        let (history, _state) = branching_history();
+        let mut serialized = history.to_serialized(2);
+        serialized.revisions[1].last_child = Some(2);
+        assert!(History::from_serialized(serialized).is_err());
+    }
+
+    #[test]
+    fn rejects_a_non_root_inversion_without_a_selection() {
+        // `last_edit_pos` (history.rs) unconditionally unwraps the current
+        // revision's inversion selection for any non-root current revision;
+        // every legitimately committed non-root revision has one, but nothing
+        // stops a corrupted file from setting it to `null`.
+        let (history, _state) = branching_history();
+        let mut json = serde_json::to_value(history.to_serialized(2)).unwrap();
+        json["revisions"][1]["inversion"]["selection"] = serde_json::Value::Null;
+        let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
+        let error = History::from_serialized(serialized).unwrap_err();
+        assert!(error.to_string().contains("selection"));
+    }
+
+    #[test]
+    fn rejects_a_non_root_transaction_with_no_changes() {
+        // `last_edit_pos` also unwraps the first item of the current revision's
+        // `changes_iter()`, which yields nothing for a change set made only of
+        // `Retain` operations.
+        let (history, _state) = branching_history();
+        let mut json = serde_json::to_value(history.to_serialized(2)).unwrap();
+        let len = json["revisions"][1]["transaction"]["changes"]["len"]
+            .as_u64()
+            .unwrap();
+        json["revisions"][1]["transaction"]["changes"]["changes"] =
+            serde_json::json!([{ "Retain": len }]);
+        json["revisions"][1]["transaction"]["changes"]["len_after"] = serde_json::json!(len);
+        let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
+        let error = History::from_serialized(serialized).unwrap_err();
+        assert!(error.to_string().contains("no changes"));
+    }
+
+    #[test]
+    fn restore_timestamps_produces_a_non_decreasing_sequence_even_when_scrambled() {
+        // `jump_instant`'s binary search assumes revisions are sorted by
+        // timestamp. A corrupted file need not have ordered `timestamp_unix_ms`
+        // values, so the restored sequence must be non-decreasing regardless.
+        let (history, _state) = branching_history();
+        let mut serialized = history.to_serialized(2);
+        let len = serialized.revisions.len();
+        for (index, revision) in serialized.revisions.iter_mut().enumerate() {
+            // Deliberately scrambled: later revisions claim earlier timestamps.
+            revision.timestamp_unix_ms = (len - index) as u64 * 1000;
+        }
+
+        let timestamps = restore_timestamps(&serialized.revisions);
+        for pair in timestamps.windows(2) {
+            assert!(pair[0] <= pair[1]);
+        }
     }
 
     #[test]
