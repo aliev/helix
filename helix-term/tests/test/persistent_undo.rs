@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use helix_term::application::Application;
 use helix_view::{doc, persistent_undo::PersistentUndoConfig};
 
 use super::*;
@@ -124,13 +125,32 @@ async fn test_undo_history_is_discarded_when_the_file_changed() -> anyhow::Resul
         .with_config(persistent_undo_config(undo_dir.path()))
         .with_file(file.path(), None)
         .build()?;
-    test_key_sequence(
+    test_key_sequences(
         &mut app,
-        Some("u"),
-        Some(&|app| {
-            let doc = doc!(app.editor);
-            assert_eq!(doc.text().to_string(), "something else\n");
-        }),
+        vec![
+            // A stray `u` with no history of its own must be a no-op, not the
+            // discarded history's "hello world\n" -> "hello\n" undo.
+            (
+                Some("u"),
+                Some(&|app: &Application| {
+                    let doc = doc!(app.editor);
+                    assert_eq!(doc.text().to_string(), "something else\n");
+                }),
+            ),
+            // A real edit followed by two undos discriminates wiring being
+            // present but correctly discarding the mismatched history from
+            // wiring being entirely absent: if the stale history had been
+            // restored, the second undo would walk into it and change the
+            // text; here it must be a no-op instead, since this session's own
+            // history has nothing more to undo.
+            (
+                Some("A!<esc>uu"),
+                Some(&|app: &Application| {
+                    let doc = doc!(app.editor);
+                    assert_eq!(doc.text().to_string(), "something else\n");
+                }),
+            ),
+        ],
         false,
     )
     .await?;
@@ -155,6 +175,42 @@ async fn test_undo_history_follows_a_save_as() -> anyhow::Result<()> {
         .build()?;
     let write_as = format!("A world<esc>:w {}<ret>", other.to_string_lossy());
     test_key_sequence(&mut app, Some(&write_as), None, false).await?;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(persistent_undo_config(undo_dir.path()))
+        .with_file(&other, None)
+        .build()?;
+    test_key_sequence(
+        &mut app,
+        Some("u"),
+        Some(&|app| {
+            let doc = doc!(app.editor);
+            assert_eq!(doc.text().to_string(), "hello\n");
+        }),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_undo_history_follows_a_save_as_and_quit() -> anyhow::Result<()> {
+    // `:wq other.txt` (like `:x other.txt`, `:wq!` and `:x!`) drains the save
+    // queue through `Editor::flush_writes`, which never calls `set_doc_path`:
+    // the document's own path is still the old one when `DocumentDidSave`
+    // fires, so `persist` must key off the event's `path` instead.
+    let undo_dir = tempfile::tempdir()?;
+    let file = helpers::temp_file_with_contents("hello\n")?;
+    let other_dir = tempfile::tempdir()?;
+    let other = other_dir.path().join("other");
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(persistent_undo_config(undo_dir.path()))
+        .with_file(file.path(), None)
+        .build()?;
+    let write_quit_as = format!("A world<esc>:wq {}<ret>", other.to_string_lossy());
+    test_key_sequence(&mut app, Some(&write_quit_as), None, true).await?;
 
     let mut app = helpers::AppBuilder::new()
         .with_config(persistent_undo_config(undo_dir.path()))

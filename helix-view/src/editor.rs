@@ -2536,6 +2536,7 @@ impl Editor {
                     doc: save_event.doc_id,
                     revision: save_event.revision,
                     text: &save_event.text,
+                    path: &save_event.path,
                 });
             }
         }

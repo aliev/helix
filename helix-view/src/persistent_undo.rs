@@ -240,16 +240,21 @@ fn restore(editor: &mut Editor, doc_id: DocumentId) {
 }
 
 /// Stores a document's history after it has been written to disk.
-fn persist(editor: &mut Editor, doc_id: DocumentId, revision: usize, text: &Rope) {
+///
+/// `path` is the path that was actually written (see `DocumentDidSave`), not
+/// `doc.path()`: on the `flush_writes` route (`:wq other.txt`, `:x
+/// other.txt`, ...) `set_doc_path` is never called, so the document's own
+/// path can still be stale here. `Document::save_impl` already canonicalizes
+/// an explicit save-as path, and the document's own path is canonical too, so
+/// this path is always the correct key as-is; no further canonicalization is
+/// needed.
+fn persist(editor: &mut Editor, doc_id: DocumentId, revision: usize, text: &Rope, path: &Path) {
     let config = editor.config().persistent_undo.clone();
     if !config.enable {
         return;
     }
 
     let Some(doc) = editor.document_mut(doc_id) else {
-        return;
-    };
-    let Some(path) = doc.path().map(PathBuf::from) else {
         return;
     };
 
@@ -259,7 +264,7 @@ fn persist(editor: &mut Editor, doc_id: DocumentId, revision: usize, text: &Rope
     let serialized = history.to_serialized(revision);
     doc.history.set(history);
 
-    write(&config, &path, text, serialized);
+    write(&config, path, text, serialized);
 }
 
 pub fn register_hooks() {
@@ -269,7 +274,13 @@ pub fn register_hooks() {
     });
 
     register_hook!(move |event: &mut DocumentDidSave<'_>| {
-        persist(event.editor, event.doc, event.revision, event.text);
+        persist(
+            event.editor,
+            event.doc,
+            event.revision,
+            event.text,
+            event.path,
+        );
         Ok(())
     });
 }

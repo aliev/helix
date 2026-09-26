@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use helix_core::{ChangeSet, Rope};
 use helix_event::events;
 use helix_lsp::LanguageServerId;
@@ -33,7 +35,12 @@ events! {
         revision: usize,
         // The text that was written, which is not necessarily the document's
         // current text: saving is asynchronous.
-        text: &'a Rope
+        text: &'a Rope,
+        // The path that was actually written. Not always the document's own
+        // `path()`: `flush_writes` never calls `set_doc_path`, so on a
+        // save-as-and-quit (`:wq other.txt`, `:x other.txt`, ...) the
+        // document's path is still stale when this event fires.
+        path: &'a Path
     }
 
     LanguageServerInitialized<'a> {
