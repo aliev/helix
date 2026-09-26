@@ -1777,6 +1777,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2",
  "slotmap",
  "tempfile",
  "termina",

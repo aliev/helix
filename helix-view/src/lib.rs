@@ -14,6 +14,7 @@ pub mod handlers;
 pub mod info;
 pub mod input;
 pub mod keyboard;
+pub mod persistent_undo;
 pub mod register;
 pub mod theme;
 pub mod tree;
