@@ -4,6 +4,10 @@ use regex::Regex;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
+mod persist;
+
+pub use persist::InvalidHistory;
+
 #[derive(Debug, Clone)]
 pub struct State {
     pub doc: Rope,

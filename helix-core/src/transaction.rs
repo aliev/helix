@@ -4,6 +4,8 @@ use smallvec::SmallVec;
 use crate::{chars::char_is_word, Range, Rope, Selection, Tendril};
 use std::{borrow::Cow, iter::once};
 
+pub(crate) mod persist;
+
 /// (from, to, replacement)
 pub type Change = (usize, usize, Option<Tendril>);
 pub type Deletion = (usize, usize);
