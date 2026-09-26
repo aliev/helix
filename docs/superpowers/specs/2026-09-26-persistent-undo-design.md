@@ -53,8 +53,18 @@ draft added `Transaction::len_chars`) nor lossy mirror structs. The cost is
 ### Helix's own mechanisms instead of edits to hot functions
 
 - Restoring history hooks the existing `DocumentDidOpen` event.
-- Writing history hooks a new `DocumentDidSave` event, dispatched at the end of
-  `Application::handle_document_write`.
+- Writing history hooks a new `DocumentDidSave` event.
+
+`DocumentSavedEvent` is consumed in **two** places, and the event has to be
+dispatched from both:
+
+- `Application::handle_document_write` — the event loop path, reached by `:w`.
+- `Editor::flush_writes` — the shutdown path, reached by `:x`, `:wq` and `:wqa`,
+  which drains the save queue directly and never calls back into
+  `handle_document_write`.
+
+Dispatching only from the first would silently skip persistence for `:x`, one of
+the most common ways to save and quit.
 
 `Document::open` and `Document::save_impl` are not touched at all. That is the
 main win for requirement 1: both functions see regular upstream churn (atomic
@@ -89,6 +99,7 @@ helix-core/src/history.rs          +2   mod persist;  pub use persist::Serialize
 helix-view/src/lib.rs              +1   pub mod persistent_undo;
 helix-view/Cargo.toml              +1   sha2 = "0.11"   (already in the tree via helix-loader)
 helix-view/src/editor.rs           +3   use + Config field + Default line
+helix-view/src/editor.rs           +7   DocumentDidSave dispatch in flush_writes
 helix-view/src/events.rs           +7   DocumentDidSave appended to the events!{} block
 helix-view/src/handlers.rs         +1   persistent_undo::register_hooks();
 helix-term/src/events.rs           +2   import + register_event::<DocumentDidSave>();
@@ -174,19 +185,25 @@ overwritten on the next save.
 
 ### Serializing transactions
 
-`#[serde(remote = "ChangeSet")]`, `#[serde(remote = "Transaction")]`,
-`#[serde(remote = "Operation")]`, `#[serde(remote = "Range")]`.
+Each type gets a `Serialized*` mirror struct in the child module, converted with
+plain `From` impls and **struct-literal construction**:
 
-Besides exactness (no reconstruction through `Transaction::change` and no dummy
-rope), remote derive **checks the field set against the original at compile
-time**. If upstream adds a field to `ChangeSet` or `Transaction`, updating the
-fork fails to build — instead of silently dropping data, which is what a
-hand-written mirror would do.
+```rust
+Ok(ChangeSet { changes, len, len_after })
+```
 
-`Selection` uses a dedicated `SerializedSelection` struct rather than remote
-derive, because restoration has to be able to fail: `Selection::new` panics on an
-empty range vector, so an empty list from a corrupted file must be rejected
-before construction.
+Besides exactness (no reconstruction through `Transaction::change`, no dummy
+rope), this gives the property that matters for a long-lived fork: if upstream
+adds a field to `ChangeSet` or `Transaction`, the struct literal stops compiling
+and the next update fails loudly instead of silently dropping data. The same
+holds for `Operation`: converting it through an exhaustive `match` turns a new
+upstream variant into a compile error.
+
+Struct literals are used rather than `#[serde(remote)]` because the mirror also
+has to *validate* — `ChangeSet::len` and `len_after` are recomputed from the
+operation list and compared, and `Selection::new` panics on an empty range
+vector, so a corrupted range list must be rejected before construction. Remote
+derive has no place to put either check.
 
 `Tendril` (`smartstring::SmartString`) is serialized as a string through a local
 `mod tendril_serde`, which avoids enabling the `smartstring/serde` feature.
@@ -245,9 +262,17 @@ No failure path modifies the document.
 1. Enabled? Has a `path()`? Otherwise return.
 2. `hash = sha256(event.text)`.
 3. `let history = doc.history.take(); let data = history.to_serialized(event.revision); doc.history.set(history);`
-4. Serialize the envelope to a `String` on the current thread (kilobytes).
-5. `tokio::spawn`: `create_dir_all`, write a temporary file in the same
-   directory, `0600` on unix, `rename` over the target.
+4. Serialize the envelope to a `String` (kilobytes).
+5. Write it: `create_dir_all`, a temporary file in the same directory, `0600` on
+   unix, `rename` over the target.
+
+The write is **synchronous**, on the thread running the hook. Offloading it to
+`tokio::spawn` would be nicer for latency but loses the history exactly where it
+is most expected to work: on `:x` the runtime shuts down immediately after the
+save, and a detached task is dropped before it reaches the disk. Nothing tracks
+such a task the way `Editor::flush_writes` tracks document writes. The payload is
+a few kilobytes and the write happens only on an explicit save, so blocking is a
+fair trade for a guarantee.
 
 Errors only go to the log; they never affect saving the document.
 
