@@ -74,16 +74,25 @@ impl SerializedChangeSet {
         // is the document length the change set may be applied to, so a corrupted
         // value either makes every later `apply` fail or lets one run against a
         // document it was not built for.
-        let mut len = 0;
-        let mut len_after = 0;
+        // `checked_add` rather than `+=`: the operands come straight from
+        // deserialized JSON, so an overflowing sum must be rejected instead of
+        // panicking (debug) or wrapping (release) and letting a corrupted
+        // length claim pass by wraparound.
+        let overflow = || InvalidHistory::new("change set length overflows");
+        let mut len: usize = 0;
+        let mut len_after: usize = 0;
         for operation in &changes {
             match operation {
                 Operation::Retain(n) => {
-                    len += n;
-                    len_after += n;
+                    len = len.checked_add(*n).ok_or_else(overflow)?;
+                    len_after = len_after.checked_add(*n).ok_or_else(overflow)?;
                 }
-                Operation::Delete(n) => len += n,
-                Operation::Insert(text) => len_after += text.chars().count(),
+                Operation::Delete(n) => len = len.checked_add(*n).ok_or_else(overflow)?,
+                Operation::Insert(text) => {
+                    len_after = len_after
+                        .checked_add(text.chars().count())
+                        .ok_or_else(overflow)?
+                }
             }
         }
 
@@ -240,6 +249,22 @@ mod tests {
             .into_transaction()
             .unwrap_err();
         assert!(error.to_string().contains("change set length"));
+    }
+
+    #[test]
+    fn rejects_a_change_set_whose_length_overflows() {
+        // Two retains near `usize::MAX` overflow when summed. Trusting that
+        // arithmetic would panic (debug) or silently wrap (release), letting a
+        // corrupted change set's length claim pass by wraparound.
+        let json = format!(
+            r#"{{"changes":{{"changes":[{{"Retain":{max}}},{{"Retain":{max}}}],"len":0,"len_after":0}},"selection":null}}"#,
+            max = usize::MAX,
+        );
+        let error = serde_json::from_str::<SerializedTransaction>(&json)
+            .unwrap()
+            .into_transaction()
+            .unwrap_err();
+        assert!(error.to_string().contains("overflow"));
     }
 
     #[test]
