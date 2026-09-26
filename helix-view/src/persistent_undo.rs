@@ -1,8 +1,8 @@
 //! Persistent undo history.
 //!
-//! A document's undo history is written next to no one — it lives in its own
-//! directory, keyed by the hash of the document's canonical path, and is bound
-//! to the contents it was saved with. On open the stored hash is compared
+//! A document's undo history is not stored alongside the document; it lives in
+//! its own directory, keyed by the hash of the document's canonical path, and
+//! is bound to the contents it was saved with. On open the stored hash is compared
 //! against the document; anything else (a `git checkout`, another editor, a
 //! formatter) means the history no longer describes this file and is discarded.
 //!
@@ -118,7 +118,7 @@ fn read(config: &PersistentUndoConfig, path: &Path, text: &Rope) -> Option<Histo
     };
 
     if undo_file.version != FORMAT_VERSION {
-        log::debug!(
+        log::warn!(
             "discarding undo history '{}' written in format version {}",
             undo_file_path.display(),
             undo_file.version
