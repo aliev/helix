@@ -1615,3 +1615,46 @@ Expected: builds without errors. If `mdbook` is not installed, skip this step an
 git add book/src/editor.md
 git commit -m "docs: document the persistent-undo option"
 ```
+
+---
+
+## Amendments made during execution
+
+The code blocks above are the plan as written before implementation. Five
+defects in them were found by task reviews and corrected in the shipped code.
+They are recorded here rather than edited into the blocks above, so that the
+plan stays a faithful record of what was planned and what changed.
+
+1. **Task 1 — `into_change_set` used `+=` to recompute `len`/`len_after`.** Those
+   operands come straight out of a file. Under the workspace's default test
+   profile the addition panics on overflow; in release it wraps silently, which
+   can let a corrupt change set pass the length check and panic later inside
+   `ChangeSet::apply`. Shipped with `checked_add` and an overflow rejection.
+
+2. **Task 2 — `from_serialized` did not validate every invariant the rest of
+   `history.rs` assumes.** `last_edit_pos` unconditionally expects a non-root
+   revision's inversion to carry a selection and its transaction to yield at
+   least one change, and panics on `g;` otherwise. `last_child` was bounds-checked
+   but not required to point forward or to agree with its target's parent.
+   All four checks shipped; each is guaranteed by `commit_revision_at_timestamp`,
+   so none can reject a legitimate history.
+
+3. **Task 2 — `restore_timestamps` did not guarantee ordering.** `jump_instant`
+   binary-searches revisions by timestamp. Shipped with a running maximum that
+   clamps the sequence non-decreasing, rather than rejecting the file: timestamps
+   are the least valuable part of a history to discard it over.
+
+4. **Task 3 — the version-mismatch discard logged at `debug`.** The design doc
+   specifies `warn`, and a format bump discards every user's history at once.
+   Shipped at `warn`. The content-hash mismatch stays at `debug`, since a file
+   changing on disk is an ordinary event.
+
+5. **Task 4 — `persist` read `doc.path()`.** `:wq other.txt` and `:x other.txt`
+   route only through `Editor::flush_writes`, which never calls `set_doc_path`,
+   so the history was keyed to the old path: the new file got none, and the old
+   file's undo file was overwritten with a mismatched hash. Shipped with the
+   written path threaded through `DocumentDidSave` and used directly.
+
+The plan's own documentation task also linked to a `#data-directory` anchor that
+does not exist anywhere in the book. The shipped documentation states the default
+in prose without a link, matching `book/src/workspace-trust.md`.

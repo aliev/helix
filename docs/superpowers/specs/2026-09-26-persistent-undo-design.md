@@ -119,12 +119,25 @@ DocumentDidSave<'a> {
     editor: &'a mut Editor,
     doc: DocumentId,
     revision: usize,
-    text: &'a Rope
+    text: &'a Rope,
+    path: &'a Path
 }
 ```
 
-Dispatched at the end of `Application::handle_document_write`, **after**
-`Editor::set_doc_path`, so that `:w other.txt` writes history under the new path.
+The event carries the path that was **written**, which is not always the
+document's own path. `:wq other.txt` and `:x other.txt` save and quit in one
+command, routing exclusively through `Editor::flush_writes`, and nothing on that
+route calls `Editor::set_doc_path` — so `doc.path()` is still the old path when
+the event fires. Keying the history off `doc.path()` there would give the new
+file no history and overwrite the old file's undo file with a mismatched hash,
+destroying the old file's history on its next open.
+
+Taking the path from the event removes the problem at the source, and makes the
+dispatch ordering at either site irrelevant rather than load-bearing — one less
+invariant for a future upstream merge to quietly break.
+
+No normalization is needed at the hook: `Document::save_impl` already
+canonicalizes an explicit save-as path, and a document's own path is canonical.
 
 ### Configuration
 
@@ -289,6 +302,8 @@ write leaves truncated JSON, which on the next open looks like lost history.
 | Scratch buffer | No path — ignored |
 | `:reload` | The undo file is left alone until the next `:w` |
 | Corrupted or truncated file | Validation refuses to construct an inconsistent `ChangeSet`, so a broken history never reaches `Transaction::apply`. Worst case is a discarded history |
+| Corrupted revision graph | Parent pointers must strictly decrease (`lowest_common_ancestor` walks them until they meet and would otherwise hang), `last_child` must point strictly forward and agree with its target's parent, and every non-root revision must carry an inversion selection and at least one real change — without those two, `last_edit_pos` panics on `g;`. All are guaranteed by `commit_revision_at_timestamp`, so none can reject a legitimate history |
+| Scrambled timestamps | Clamped to a non-decreasing sequence on restore rather than rejected: `jump_instant` binary-searches on that order, and timestamps are the least valuable part of a history to discard it over |
 | Privacy | The undo file contains deleted text in the clear. `0600` on unix plus a warning in the documentation |
 | Directory growth | Unbounded, as in vim. Expect 1–2 KB per editing session |
 
@@ -338,7 +353,8 @@ the clear.
 | `Rope::from(" ".repeat(len))` per revision on restore | Direct `ChangeSet` reconstruction | On a 10 MB file with 500 revisions the draft performs gigabytes of memcpy at open time |
 | Restored timestamps in the future (`now + delta`) | Absolute `unix_ms`, restored into the past with clamping | Otherwise new commits sort before old ones and break `:earlier` / `:later` |
 | `current` taken from the history when the event is handled | `DocumentSavedEvent::revision` | Fixes the race between the asynchronous write and further edits |
-| Hand-written mirror structs | `#[serde(remote)]` | An upstream field addition fails the build instead of being silently dropped |
+| Hand-written mirror structs | Mirror structs built with struct literals | An upstream field addition fails the build instead of being silently dropped |
+| Unchecked `usize` addition when recomputing change-set lengths | `checked_add` | Deserialized operation lengths can overflow: a panic under the default test profile, a silent wrap in release that lets a corrupt change set pass validation |
 | No format version field | `version: 1` | A format change between fork versions must not lead to parsing an old file under new rules |
 | Non-atomic write | Temporary file + `rename`, `0600` | A truncated file looks like lost history, and the undo file contains document text |
 | `std::env::set_var("HOME")` in tests | Explicit `dir` in the config | Overriding environment variables is unsound in a multi-threaded test runner and breaks neighbouring tests |
