@@ -339,6 +339,19 @@ Note the existing `let len = serialized.revisions.len();` near the top of the fu
 
 Add these functions at module level:
 
+> **Corrected after implementation, not rewritten here — this block is a record
+> of what was planned.** The shedding loop below drops descendants "newest
+> first" and does not distinguish abandoned branches from the redo chain. The
+> shipped version instead sheds abandoned branches (off the redo chain) first,
+> highest index first, and only cuts into the redo chain itself once none
+> remain, deepest step first — dropping by raw index alone would shed the
+> actual redo target (which `last_child` always gives the highest index among
+> `current`'s descendants) before an older, permanently abandoned branch. See
+> `helix-core/src/history/persist.rs` for what actually shipped, and its two
+> tests pinning this order:
+> `shedding_drops_abandoned_branches_before_the_redo_chain` and
+> `trimming_that_reaches_into_the_redo_chain_drops_the_deepest_step_first`.
+
 ```rust
 /// Drops revisions until the kept subtree's text fits `max_bytes`.
 ///

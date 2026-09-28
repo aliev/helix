@@ -56,9 +56,11 @@ the one moment when it does not exist.
 
 The consequence that matters for this fork: **`History` is not modified at all.**
 No watermark field, no guards in `undo`, `redo` or `changes_since`, no new lines
-in any upstream file. The entire feature lives in
-`helix-core/src/history/persist.rs` and `helix-view/src/persistent_undo.rs`, both
-created by this fork in the persistent-undo work.
+in any upstream *code* file. The feature also touches
+`helix-core/src/transaction/persist.rs` (fork-created, for the same reason) and
+`book/src/editor.md` (upstream, but documentation rather than code) — corrected
+here since an earlier version of this spec claimed only two files, neither
+upstream, which undercounted both.
 
 ## Why the kept set is a subtree, not "the newest N"
 
@@ -91,6 +93,14 @@ costs no upstream surface.
 3. If `current`'s own subtree does not fit, drop its descendant branches — they
    are reachable only by redo — newest first, until it does. If `current` alone
    still exceeds the budget, keep `current` alone.
+
+   Corrected after implementation: "newest first" was a simplification that
+   does not match the shipped algorithm. Abandoned branches (not on the redo
+   chain from `current`) are shed first, highest index first; only once none
+   remain does shedding cut into the redo chain itself, deepest step first.
+   Dropping by raw index alone would shed the actual redo target before an
+   older, permanently abandoned branch, since `last_child` always gives the
+   redo chain the highest index among `current`'s descendants.
 4. Keep R and its descendants, renumber them from zero, empty R's payloads, and
    remap `parent`, `last_child` and `current`.
 
@@ -148,7 +158,9 @@ regression being fixed.
 | `current` is the root | Nothing to walk up to; the history is kept or trimmed to `current` alone |
 | Undo file larger than 4× the budget | Discarded unread with a warning, rather than risking an out-of-memory at open |
 | Persistent undo disabled | The setting has no effect; nothing is loaded and nothing is bounded |
-| Old abandoned branches | Dropped with everything outside R's subtree. They are unreachable by `u`/`U` and were only reachable by `:earlier` through time |
+| Old abandoned branches outside R's subtree | Dropped along with everything else outside R's subtree. They are unreachable by `u`/`U` and were only reachable by `:earlier` through time |
+| Abandoned branches inside R's subtree | Retained: they still consume budget even though they are unreachable by `u`/`U`, only `:earlier` can reach them, and they were not the reason R was chosen |
+| `max-memory-kib = 0` | The file-size guard's threshold is also zero, so every undo file is discarded unread — this loads nothing, rather than trimming to a single revision |
 
 ## Testing
 
@@ -171,5 +183,9 @@ regression being fixed.
 ## Documentation
 
 `book/src/editor.md`: the new key in the `[editor.persistent-undo]` table, and a
-rewrite of the growth warning — files converge to the budget rather than growing
-without limit.
+rewrite of the growth warning.
+
+Corrected after implementation: "files converge to the budget" overstates it —
+the trim bounds stored text, not the per-revision bookkeeping that ships
+alongside it, so a trimmed file's byte size is a multiple of the budget, not
+the budget itself. See `book/src/editor.md` for the wording actually shipped.

@@ -585,20 +585,37 @@ example, through a symlink and through its target) therefore keeps two
 independent histories; the content hash still keeps either from ever being
 applied to text it does not match.
 
-| Key              | Description                                                          | Default                                            |
-| ---------------- | -------------------------------------------------------------------- | -------------------------------------------------- |
-| `enable`         | Whether to keep undo history across sessions                         | `false`                                            |
-| `dir`            | Where to keep undo files                                             | the `undo` directory inside Helix's data directory |
-| `max-memory-kib` | How much undo history to load into memory per document, in kibibytes | `32768`                                            |
+| Key              | Description                                                                              | Default                                            |
+| ---------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `enable`         | Whether to keep undo history across sessions                                              | `false`                                            |
+| `dir`            | Where to keep undo files                                                                   | the `undo` directory inside Helix's data directory |
+| `max-memory-kib` | How much undo history to load into memory per document, in kibibytes. `0` loads nothing   | `32768`                                            |
 
-A document's undo file converges to `max-memory-kib` rather than growing
-without limit: each session loads at most that much history and saves back
-what it loaded plus whatever it added, so a file that has grown past the
-budget is trimmed back down the next time the document is opened. An undo file
-larger than four times the budget is discarded unread instead of being loaded
-and trimmed, since reading it risks exhausting memory before the trim can run;
-this can happen to a file written before this setting existed, and the next
-save replaces it with one bounded by the budget.
+`max-memory-kib` bounds the text a document's restored undo history carries —
+the inserted and deleted strings in each revision — not the size of the undo
+file on disk. Each revision also carries its own bookkeeping (parent and child
+indices, a timestamp, the surrounding JSON structure) that this setting does
+not count or bound. Actual memory use is therefore a multiple of the
+configured number, not the number itself — how large a multiple depends on how
+much text each edit carries, since more revisions for the same amount of text
+mean more uncounted bookkeeping per byte that is counted. A history already
+under budget is left untouched.
+
+The undo file is rewritten in full on every save: the whole session's history
+is serialized again each time, and only trimmed back down to budget the next
+time the document is opened, not as it grows. Pairing persistent undo with
+`[editor.auto-save]`'s `after-delay` means that full rewrite happens on every
+debounce interval, not only on an explicit `:w`.
+
+Because saving does not trim, a long session can write a file many times past
+the budget before it is ever reopened — this is not particular to a file
+written before this setting existed. An undo file larger than four times the
+budget is discarded unread rather than being loaded and trimmed, since reading
+it risks exhausting memory before the trim can run; that guard does not
+distinguish the part of the file a trim would have kept from the part it would
+have dropped, so crossing it loses the session's history in full, not just the
+excess. The next save then replaces the file with one bounded by the budget
+again, until another long session repeats the cycle.
 
 Undo files record text that was deleted from the document, so they hold content
 the document itself no longer contains. They are never cleaned up — including
