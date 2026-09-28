@@ -259,13 +259,35 @@ async fn test_a_tiny_budget_trims_history_but_keeps_undo_working() -> anyhow::Re
         .build()?;
     // Four separate revisions, each a large enough insert to matter against a
     // 1 KiB budget. Walking up from the newest, the subtree each revision's
-    // undo would have to restore costs 1600, 1200, 800 and then 400 bytes
+    // undo would have to restore costs 400, 800, 1200 and then 1600 bytes
     // (each `Delete` inversion carries no text and costs nothing) — a 1 KiB
     // budget keeps only the last two, so undo must run out before reaching
     // the original "hello\n".
     let big = "z".repeat(400);
     let keys = format!("A{big}<esc>A{big}<esc>A{big}<esc>A{big}<esc>:w<ret>");
     test_key_sequence(&mut app, Some(&keys), None, false).await?;
+
+    // The margin this test relies on: the file-size guard discards anything
+    // over 4 * 1 KiB unread (see `FILE_SIZE_GUARD` in
+    // `helix-view/src/persistent_undo.rs`). If the written file ever crossed
+    // that, `read` would return `None`, the restored history would be empty,
+    // every `u` below would be a no-op, and the buffer would stay at the
+    // fixture's 1600 appended bytes — which also starts with "hello" and
+    // sits on a 400-byte boundary, so the assertions below would still pass
+    // while testing nothing. Pinning the fixture under the threshold keeps
+    // this test actually exercising a trim rather than a total discard.
+    let entries: Vec<_> = fs::read_dir(undo_dir.path())?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected exactly one undo file, found: {entries:?}"
+    );
+    let undo_file_size = entries[0].metadata()?.len();
+    assert!(
+        undo_file_size < 4 * 1024,
+        "fixture's undo file must stay under the 4 KiB file-size guard to exercise a trim \
+         rather than a discard: was {undo_file_size} bytes"
+    );
 
     let mut app = helpers::AppBuilder::new()
         .with_config(config)
@@ -277,25 +299,16 @@ async fn test_a_tiny_budget_trims_history_but_keeps_undo_working() -> anyhow::Re
         Some(&|app: &Application| {
             let doc = doc!(app.editor);
             // Undo walks back as far as the trimmed history allows and then
-            // stops. It must not panic, and it must not leave the buffer in a
-            // state the document was never in: every reachable state is a
-            // prefix-count of the appended blocks.
+            // stops. A 1 KiB budget keeps only the last two revisions (costing
+            // 400 and 800 bytes against the budget), so the promoted root is
+            // the revision carrying 1200 appended bytes; undo reaches exactly
+            // that state and no further; it must not panic, and it must not
+            // leave the buffer in a state the document was never in.
             let text = doc.text().to_string();
-            assert!(
-                text.starts_with("hello"),
-                "unexpected buffer contents after undo: {text:?}"
-            );
-            let appended = text.len() - "hello\n".len();
-            assert_eq!(appended % 400, 0, "buffer is not at a revision boundary");
-            // The discriminating assertion: with the budget ignored, undo
-            // would walk all the way back to the original "hello\n", which
-            // also sits on a revision boundary (appended == 0) and would
-            // satisfy the assertion above alone. The revisions that would
-            // take the buffer back that far were trimmed away, so undo must
-            // run out first and the buffer must not be the original.
-            assert_ne!(
-                text, "hello\n",
-                "undo returned to the original contents; the budget did not trim any history"
+            let expected = format!("hello{}\n", "z".repeat(1200));
+            assert_eq!(
+                text, expected,
+                "undo did not stop at the trimmed history's promoted root"
             );
         }),
         false,
