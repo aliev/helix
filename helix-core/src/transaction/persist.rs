@@ -54,6 +54,29 @@ impl SerializedTransaction {
     pub(crate) fn change_set_lengths(&self) -> (usize, usize) {
         (self.changes.len, self.changes.len_after)
     }
+
+    /// The total byte length of the text this transaction carries.
+    ///
+    /// Only `Insert` operations hold text; `Retain` and `Delete` are counts.
+    /// This is the figure the load-time memory budget is measured against,
+    /// because inserted and deleted strings are what actually occupy memory —
+    /// the surrounding structures are roughly two hundred bytes against
+    /// payloads measured in kilobytes.
+    pub(crate) fn text_bytes(&self) -> usize {
+        self.changes.text_bytes()
+    }
+
+    /// A transaction with no operations and no selection.
+    ///
+    /// The trim gives this to the revision it promotes to root: there is
+    /// nothing above a root to undo into, so it carries no change of its own.
+    /// It matches what `History::default` builds for a fresh history's root.
+    pub(crate) fn empty() -> Self {
+        Self {
+            changes: SerializedChangeSet::empty(),
+            selection: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,6 +143,24 @@ impl SerializedChangeSet {
             len: self.len,
             len_after: self.len_after,
         })
+    }
+
+    fn text_bytes(&self) -> usize {
+        self.changes
+            .iter()
+            .map(|operation| match operation {
+                SerializedOperation::Retain(_) | SerializedOperation::Delete(_) => 0,
+                SerializedOperation::Insert(text) => text.len(),
+            })
+            .sum()
+    }
+
+    fn empty() -> Self {
+        Self {
+            changes: Vec::new(),
+            len: 0,
+            len_after: 0,
+        }
     }
 }
 
@@ -297,5 +338,43 @@ mod tests {
             .into_transaction()
             .unwrap_err();
         assert!(error.to_string().contains("primary index"));
+    }
+
+    #[test]
+    fn measures_only_inserted_text() {
+        let doc = Rope::from("hello world\n");
+        // Retain 5, insert ", cruel" (7 bytes), retain 6, delete the newline.
+        let transaction = Transaction::change(
+            &doc,
+            [(5, 5, Some(", cruel".into())), (11, 12, None)].into_iter(),
+        );
+
+        // Retains and deletes carry no text of their own, so only the insert counts.
+        assert_eq!(SerializedTransaction::from(&transaction).text_bytes(), 7);
+    }
+
+    #[test]
+    fn measures_multibyte_text_in_bytes_not_characters() {
+        let doc = Rope::from("x");
+        // "привет" is 6 characters but 12 bytes.
+        let transaction = Transaction::change(&doc, [(0, 0, Some("привет".into()))].into_iter());
+
+        assert_eq!(SerializedTransaction::from(&transaction).text_bytes(), 12);
+    }
+
+    #[test]
+    fn an_empty_transaction_measures_zero_and_round_trips() {
+        let empty = SerializedTransaction::empty();
+        assert_eq!(empty.text_bytes(), 0);
+        assert_eq!(empty.change_set_lengths(), (0, 0));
+
+        // The new root built by the trim must survive the same path any other
+        // revision takes, including deserialization of a file it was written to.
+        let json = serde_json::to_string(&empty).unwrap();
+        let restored: SerializedTransaction = serde_json::from_str(&json).unwrap();
+        let transaction = restored.into_transaction().unwrap();
+
+        assert!(transaction.changes_iter().next().is_none());
+        assert!(transaction.selection().is_none());
     }
 }
