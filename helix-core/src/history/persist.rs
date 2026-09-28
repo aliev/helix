@@ -301,9 +301,9 @@ fn trim_to_budget(serialized: &mut SerializedHistory, max_bytes: usize) {
 
     // Everything outside the chosen root's subtree goes, including abandoned
     // branches that are older than it.
-    for index in 0..len {
+    for (index, keep) in kept.iter_mut().enumerate() {
         if !is_descendant_of(&serialized.revisions, index, root) && index != root {
-            kept[index] = false;
+            *keep = false;
         }
     }
     kept[root] = true;
