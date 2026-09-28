@@ -29,13 +29,31 @@ use crate::{DocumentId, Editor};
 const FORMAT_VERSION: u32 = 1;
 
 /// User-facing configuration for `[editor.persistent-undo]`.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PersistentUndoConfig {
     /// Whether to keep undo history across editing sessions. Defaults to `false`.
     pub enable: bool,
     /// Where to keep undo files. Defaults to `data_dir()/undo`.
     pub dir: Option<PathBuf>,
+    /// How much undo history to load into memory per document, in kibibytes.
+    /// Defaults to 32768 (32 MiB).
+    ///
+    /// Older history beyond this is dropped at load time. There is no unlimited
+    /// setting: unlimited is the behavior this budget exists to correct, since
+    /// persistent undo otherwise reloads a document's entire accumulated
+    /// history on every open.
+    pub max_memory_kib: usize,
+}
+
+impl Default for PersistentUndoConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            dir: None,
+            max_memory_kib: 32768,
+        }
+    }
 }
 
 /// The stored file. `current` and `revisions` are flattened in from
@@ -141,6 +159,25 @@ fn parse_undo_file(contents: &str) -> ParsedUndoFile {
 fn read(config: &PersistentUndoConfig, path: &Path, text: &Rope) -> Option<History> {
     let undo_file_path = undo_file(config, path);
 
+    let max_bytes = config.max_memory_kib.saturating_mul(1024);
+
+    // A file this large can only predate the budget or be corrupt. `serde_json`
+    // materializes the whole document before the trim can run, so reading one
+    // risks an out-of-memory at open; refusing is the safer failure.
+    const FILE_SIZE_GUARD: u64 = 4;
+    if let Ok(metadata) = fs::metadata(&undo_file_path) {
+        if metadata.len() > (max_bytes as u64).saturating_mul(FILE_SIZE_GUARD) {
+            log::warn!(
+                "discarding undo history '{}': {} bytes exceeds {} times the {} KiB budget",
+                undo_file_path.display(),
+                metadata.len(),
+                FILE_SIZE_GUARD,
+                config.max_memory_kib
+            );
+            return None;
+        }
+    }
+
     let contents = match fs::read_to_string(&undo_file_path) {
         Ok(contents) => contents,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return None,
@@ -179,7 +216,7 @@ fn read(config: &PersistentUndoConfig, path: &Path, text: &Rope) -> Option<Histo
         return None;
     }
 
-    match History::from_serialized(undo_file.history) {
+    match History::from_serialized(undo_file.history, max_bytes) {
         Ok(history) => Some(history),
         Err(err) => {
             log::warn!(
@@ -355,6 +392,7 @@ mod tests {
         PersistentUndoConfig {
             enable: true,
             dir: Some(dir.to_path_buf()),
+            ..PersistentUndoConfig::default()
         }
     }
 
@@ -513,6 +551,7 @@ mod tests {
         let config = PersistentUndoConfig {
             enable: true,
             dir: Some(blocked),
+            ..PersistentUndoConfig::default()
         };
         write(
             &config,
@@ -520,6 +559,52 @@ mod tests {
             &Rope::from("hello world\n"),
             history().to_serialized(1).unwrap(),
         );
+    }
+
+    #[test]
+    fn the_default_budget_is_32_mib() {
+        let config = PersistentUndoConfig::default();
+        assert_eq!(config.max_memory_kib, 32768);
+        assert!(!config.enable);
+    }
+
+    #[test]
+    fn a_config_without_the_budget_key_still_deserializes() {
+        // Configs written before this setting existed must keep working and
+        // pick up the default, rather than failing to parse.
+        let config: PersistentUndoConfig = toml::from_str("enable = true\n").unwrap();
+        assert!(config.enable);
+        assert_eq!(config.max_memory_kib, 32768);
+    }
+
+    #[test]
+    fn an_oversized_undo_file_is_discarded_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        // 1 KiB of budget allows at most 4 KiB of file.
+        config.max_memory_kib = 1;
+        let path = Path::new("/documents/hello.txt");
+        let text = Rope::from("hello world\n");
+
+        write(&config, path, &text, history().to_serialized(1).unwrap());
+        let stored = undo_file(&config, path);
+        std::fs::write(&stored, "x".repeat(5 * 1024)).unwrap();
+
+        assert!(read(&config, path, &text).is_none());
+    }
+
+    #[test]
+    fn a_file_within_the_guard_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = config(dir.path());
+        config.max_memory_kib = 1;
+        let path = Path::new("/documents/hello.txt");
+        let text = Rope::from("hello world\n");
+
+        write(&config, path, &text, history().to_serialized(1).unwrap());
+        // The written file is far below 4 KiB, so the guard must not fire.
+        assert!(std::fs::metadata(undo_file(&config, path)).unwrap().len() < 4 * 1024);
+        assert!(read(&config, path, &text).is_some());
     }
 
     #[cfg(unix)]
