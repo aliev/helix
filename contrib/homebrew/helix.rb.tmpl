@@ -1,0 +1,62 @@
+# Template for the Homebrew formula published to aliev/homebrew-tap.
+#
+# The Release workflow renders this file by replacing the placeholder tokens
+# with the tag and the checksums of the archives it just uploaded, then commits
+# the result to the tap. Edit the formula here, not in the tap: anything changed
+# there is overwritten by the next release.
+class Helix < Formula
+  desc "Post-modern modal text editor, with this fork's persistent undo"
+  homepage "https://github.com/aliev/helix"
+  version "@VERSION@"
+  license "MPL-2.0"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/aliev/helix/releases/download/@VERSION@/helix-@VERSION@-aarch64-macos.tar.xz"
+      sha256 "@SHA256_AARCH64_MACOS@"
+    end
+    on_intel do
+      url "https://github.com/aliev/helix/releases/download/@VERSION@/helix-@VERSION@-x86_64-macos.tar.xz"
+      sha256 "@SHA256_X86_64_MACOS@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/aliev/helix/releases/download/@VERSION@/helix-@VERSION@-aarch64-linux.tar.xz"
+      sha256 "@SHA256_AARCH64_LINUX@"
+    end
+    on_intel do
+      url "https://github.com/aliev/helix/releases/download/@VERSION@/helix-@VERSION@-x86_64-linux.tar.xz"
+      sha256 "@SHA256_X86_64_LINUX@"
+    end
+  end
+
+  def install
+    # `hx` finds its runtime directory beside the executable, resolving the
+    # symlink first (helix-loader/src/lib.rs), so keeping the two together in
+    # libexec needs neither a wrapper script nor HELIX_RUNTIME.
+    libexec.install "hx", "runtime"
+    bin.install_symlink libexec/"hx"
+
+    bash_completion.install "contrib/completion/hx.bash" => "hx"
+    fish_completion.install "contrib/completion/hx.fish"
+    zsh_completion.install "contrib/completion/hx.zsh" => "_hx"
+  end
+
+  def caveats
+    <<~EOS
+      This is a personal fork of helix. It installs the same `hx` binary as the
+      homebrew-core `helix` formula, so only one of the two can be linked.
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/hx --version")
+    # `hx --health` prints the runtime directories it resolved. Asserting the
+    # libexec path appears there proves the symlink-canonicalizing lookup found
+    # the runtime we installed, which is the one thing a wrapper script would
+    # otherwise be needed for.
+    assert_match (libexec/"runtime").to_s, shell_output("#{bin}/hx --health")
+  end
+end
