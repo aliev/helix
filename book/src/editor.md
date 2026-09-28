@@ -585,17 +585,20 @@ example, through a symlink and through its target) therefore keeps two
 independent histories; the content hash still keeps either from ever being
 applied to text it does not match.
 
-| Key      | Description                                  | Default                                            |
-| ---      | ---                                          | ---                                                |
-| `enable` | Whether to keep undo history across sessions | `false`                                            |
-| `dir`    | Where to keep undo files                     | the `undo` directory inside Helix's data directory |
+| Key              | Description                                                          | Default                                            |
+| ---------------- | -------------------------------------------------------------------- | -------------------------------------------------- |
+| `enable`         | Whether to keep undo history across sessions                         | `false`                                            |
+| `dir`            | Where to keep undo files                                             | the `undo` directory inside Helix's data directory |
+| `max-memory-kib` | How much undo history to load into memory per document, in kibibytes | `32768`                                            |
 
-A document's undo file holds its entire history, not a bounded window, and is
-rewritten in full on every save. Enabling this together with
-`[editor.auto-save]`'s `after-delay` saving means that full rewrite happens on
-every debounce interval rather than only when you explicitly save, so the cost
-scales with how long you have been editing the file rather than with the size
-of the edit.
+A document's undo file converges to `max-memory-kib` rather than growing
+without limit: each session loads at most that much history and saves back
+what it loaded plus whatever it added, so a file that has grown past the
+budget is trimmed back down the next time the document is opened. An undo file
+larger than four times the budget is discarded unread instead of being loaded
+and trimmed, since reading it risks exhausting memory before the trim can run;
+this can happen to a file written before this setting existed, and the next
+save replaces it with one bounded by the budget.
 
 Undo files record text that was deleted from the document, so they hold content
 the document itself no longer contains. They are never cleaned up — including

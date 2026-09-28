@@ -245,6 +245,67 @@ async fn test_undo_history_follows_a_save_as_and_quit() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_a_tiny_budget_trims_history_but_keeps_undo_working() -> anyhow::Result<()> {
+    let undo_dir = tempfile::tempdir()?;
+    let file = helpers::temp_file_with_contents("hello\n")?;
+
+    let mut config = persistent_undo_config(undo_dir.path());
+    // One kibibyte: several of the edits below will not fit.
+    config.editor.persistent_undo.max_memory_kib = 1;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config.clone())
+        .with_file(file.path(), None)
+        .build()?;
+    // Four separate revisions, each a large enough insert to matter against a
+    // 1 KiB budget. Walking up from the newest, the subtree each revision's
+    // undo would have to restore costs 1600, 1200, 800 and then 400 bytes
+    // (each `Delete` inversion carries no text and costs nothing) — a 1 KiB
+    // budget keeps only the last two, so undo must run out before reaching
+    // the original "hello\n".
+    let big = "z".repeat(400);
+    let keys = format!("A{big}<esc>A{big}<esc>A{big}<esc>A{big}<esc>:w<ret>");
+    test_key_sequence(&mut app, Some(&keys), None, false).await?;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config)
+        .with_file(file.path(), None)
+        .build()?;
+    test_key_sequence(
+        &mut app,
+        Some("uuuuuuuu"),
+        Some(&|app: &Application| {
+            let doc = doc!(app.editor);
+            // Undo walks back as far as the trimmed history allows and then
+            // stops. It must not panic, and it must not leave the buffer in a
+            // state the document was never in: every reachable state is a
+            // prefix-count of the appended blocks.
+            let text = doc.text().to_string();
+            assert!(
+                text.starts_with("hello"),
+                "unexpected buffer contents after undo: {text:?}"
+            );
+            let appended = text.len() - "hello\n".len();
+            assert_eq!(appended % 400, 0, "buffer is not at a revision boundary");
+            // The discriminating assertion: with the budget ignored, undo
+            // would walk all the way back to the original "hello\n", which
+            // also sits on a revision boundary (appended == 0) and would
+            // satisfy the assertion above alone. The revisions that would
+            // take the buffer back that far were trimmed away, so undo must
+            // run out first and the buffer must not be the original.
+            assert_ne!(
+                text, "hello\n",
+                "undo returned to the original contents; the budget did not trim any history"
+            );
+        }),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn test_saving_succeeds_when_the_undo_directory_is_unusable() -> anyhow::Result<()> {
     // A plain file where the undo directory should be. Persisting the history
     // fails; saving the document must not.
