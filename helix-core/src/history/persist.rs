@@ -75,7 +75,10 @@ impl History {
 
     /// Rebuilds a history from plain data, rejecting anything that would make
     /// the revision graph unsound.
-    pub fn from_serialized(serialized: SerializedHistory) -> Result<Self, InvalidHistory> {
+    pub fn from_serialized(
+        mut serialized: SerializedHistory,
+        max_bytes: usize,
+    ) -> Result<Self, InvalidHistory> {
         if serialized.revisions.is_empty() {
             return Err(InvalidHistory::new("history has no revisions"));
         }
@@ -165,6 +168,21 @@ impl History {
             }
         }
 
+        // Trim here: after validation, so the walk below can rely on
+        // `parent < index`; before the build loop, so revisions that are about
+        // to be dropped are never turned into `Transaction`s in the first place.
+        //
+        // Renumbering is safe at this exact moment and nowhere else. A revision
+        // index is dangerous only while something outside `History` is holding
+        // one — `Document::last_saved_revision` and `View::doc_revisions` — and
+        // at load time neither exists yet: the document was just built, its
+        // last-saved revision is about to be set by the restore hook, and no
+        // view has synced with it. That is why this feature needs no changes to
+        // `History` itself.
+        trim_to_budget(&mut serialized, max_bytes);
+
+        let len = serialized.revisions.len();
+
         let timestamps = restore_timestamps(&serialized.revisions);
         let mut revisions = Vec::with_capacity(len);
 
@@ -206,6 +224,141 @@ impl History {
             revisions,
             current: serialized.current,
         })
+    }
+}
+
+/// Drops revisions until the kept subtree's text fits `max_bytes`.
+///
+/// The kept set is always a subtree. A revision's `inversion` reconstructs the
+/// text of its parent, so keeping a child whose parent was dropped would make
+/// undo produce a document state that never existed.
+fn trim_to_budget(serialized: &mut SerializedHistory, max_bytes: usize) {
+    let len = serialized.revisions.len();
+
+    // Each revision's own payload, then its subtree total. Parents always
+    // precede their children, so one backwards pass accumulates every subtree.
+    let own: Vec<usize> = serialized
+        .revisions
+        .iter()
+        .map(|revision| revision.transaction.text_bytes() + revision.inversion.text_bytes())
+        .collect();
+    let mut subtree = own.clone();
+    for index in (1..len).rev() {
+        subtree[serialized.revisions[index].parent] += subtree[index];
+    }
+
+    let mut kept: Vec<bool> = vec![true; len];
+    let current = serialized.current;
+
+    // Descendants of `current` are reachable only by redo. When `current`'s own
+    // subtree overflows, shed them newest first: the highest kept index in a
+    // subtree is always a leaf, because children have larger indices than their
+    // parents.
+    let mut current_subtree = subtree[current];
+    while current_subtree > max_bytes {
+        let leaf = (current + 1..len)
+            .rev()
+            .find(|&index| kept[index] && is_descendant_of(&serialized.revisions, index, current));
+        match leaf {
+            Some(index) => {
+                kept[index] = false;
+                current_subtree -= own[index];
+            }
+            // Nothing left to shed: `current` alone exceeds the budget and is
+            // kept anyway. A single large edit must not leave an empty history.
+            None => break,
+        }
+    }
+
+    // Walk up from `current` while the ancestor's subtree still fits, keeping
+    // as much undo depth as the budget allows.
+    let mut root = current;
+    loop {
+        let parent = serialized.revisions[root].parent;
+        if parent == root {
+            break;
+        }
+        // The dropped redo branches above are not reflected in `subtree`, so
+        // this can only ever choose a smaller root than strictly necessary —
+        // never a larger one, which would overshoot the budget.
+        if subtree[parent] > max_bytes {
+            break;
+        }
+        root = parent;
+    }
+
+    // Everything outside the chosen root's subtree goes, including abandoned
+    // branches that are older than it.
+    for index in 0..len {
+        if !is_descendant_of(&serialized.revisions, index, root) && index != root {
+            kept[index] = false;
+        }
+    }
+    kept[root] = true;
+
+    if kept.iter().all(|&keep| keep) && root == 0 {
+        return;
+    }
+
+    // Renumber. Old indices are ascending, so the surviving order is preserved
+    // and parents still precede their children.
+    let mut remap = vec![usize::MAX; len];
+    let mut next = 0;
+    for index in 0..len {
+        if kept[index] {
+            remap[index] = next;
+            next += 1;
+        }
+    }
+
+    let mut revisions = Vec::with_capacity(next);
+    for (index, mut revision) in std::mem::take(&mut serialized.revisions)
+        .into_iter()
+        .enumerate()
+    {
+        if !kept[index] {
+            continue;
+        }
+
+        if index == root {
+            // There is nothing above a root to undo into, so it carries no
+            // change of its own — matching the root `History::default` builds.
+            revision.parent = 0;
+            revision.transaction = SerializedTransaction::empty();
+            revision.inversion = SerializedTransaction::empty();
+        } else {
+            revision.parent = remap[revision.parent];
+        }
+
+        revision.last_child = revision
+            .last_child
+            .filter(|&child| kept[child])
+            .map(|child| remap[child]);
+
+        revisions.push(revision);
+    }
+
+    serialized.current = remap[current];
+    serialized.revisions = revisions;
+}
+
+/// Whether `index` is `ancestor` or sits below it in the tree.
+fn is_descendant_of(revisions: &[SerializedRevision], index: usize, ancestor: usize) -> bool {
+    if index < ancestor {
+        return false;
+    }
+    let mut walk = index;
+    // Parents strictly decrease except at the root, which is its own parent, so
+    // this terminates for any graph that passed validation.
+    loop {
+        if walk == ancestor {
+            return true;
+        }
+        let parent = revisions[walk].parent;
+        if parent == walk {
+            return false;
+        }
+        walk = parent;
     }
 }
 
@@ -341,9 +494,126 @@ mod tests {
         (history, state)
     }
 
+    /// A budget no test history can reach, for tests about something else.
+    const NO_TRIM: usize = usize::MAX;
+
     fn roundtrip(history: &History, current: usize) -> History {
         let json = serde_json::to_string(&history.to_serialized(current).unwrap()).unwrap();
-        History::from_serialized(serde_json::from_str(&json).unwrap()).unwrap()
+        History::from_serialized(serde_json::from_str(&json).unwrap(), NO_TRIM).unwrap()
+    }
+
+    /// A linear history: "" -> "aaaa" -> "bbbb" -> "cccc", each revision
+    /// carrying four bytes of inserted text and four of deleted text in its
+    /// inversion.
+    fn linear_history() -> (History, State) {
+        let mut state = State {
+            doc: Rope::from(""),
+            selection: Selection::point(0),
+        };
+        let mut history = History::default();
+        for text in ["aaaa", "bbbb", "cccc"] {
+            let transaction = Transaction::change(
+                &state.doc,
+                [(0, state.doc.len_chars(), Some(text.into()))].into_iter(),
+            )
+            .with_selection(Selection::point(0));
+            history.commit_revision(&transaction, &state);
+            transaction.apply(&mut state.doc);
+        }
+        (history, state)
+    }
+
+    #[test]
+    fn a_history_within_budget_is_untouched() {
+        let (history, _state) = linear_history();
+        let restored =
+            History::from_serialized(history.to_serialized(3).unwrap(), NO_TRIM).unwrap();
+
+        assert_eq!(restored.current_revision(), 3);
+        assert_eq!(restored.revisions.len(), 4);
+    }
+
+    #[test]
+    fn a_history_over_budget_keeps_the_newest_revisions() {
+        let (history, _state) = linear_history();
+        // Room for roughly one revision's payload: the trim must walk up from
+        // `current` and stop early.
+        let restored = History::from_serialized(history.to_serialized(3).unwrap(), 16).unwrap();
+
+        assert!(restored.revisions.len() < 4);
+        // `current` always survives, renumbered to the end of what was kept.
+        assert_eq!(restored.current_revision(), restored.revisions.len() - 1);
+    }
+
+    #[test]
+    fn the_promoted_root_carries_no_change() {
+        let (history, _state) = linear_history();
+        let restored = History::from_serialized(history.to_serialized(3).unwrap(), 16).unwrap();
+
+        let root = &restored.revisions[0];
+        assert_eq!(root.parent, 0);
+        assert!(root.transaction.changes_iter().next().is_none());
+        assert!(root.inversion.changes_iter().next().is_none());
+    }
+
+    #[test]
+    fn a_trimmed_history_still_undoes_and_stops_at_its_root() {
+        let (history, state) = linear_history();
+        let mut restored = History::from_serialized(history.to_serialized(3).unwrap(), 16).unwrap();
+
+        let mut doc = state.doc.clone();
+        // Undo back to the new root, then confirm it refuses to go further
+        // rather than producing text that was never on screen.
+        loop {
+            let Some(transaction) = restored.undo().cloned() else {
+                break;
+            };
+            assert!(transaction.apply(&mut doc));
+        }
+        assert_eq!(restored.current_revision(), 0);
+        assert!(restored.undo().is_none());
+    }
+
+    #[test]
+    fn a_zero_budget_keeps_exactly_one_revision() {
+        let (history, _state) = linear_history();
+        let mut restored = History::from_serialized(history.to_serialized(3).unwrap(), 0).unwrap();
+
+        assert_eq!(restored.revisions.len(), 1);
+        assert_eq!(restored.current_revision(), 0);
+        assert!(restored.undo().is_none());
+    }
+
+    #[test]
+    fn trimming_keeps_redo_branches_of_the_current_revision() {
+        // Undo to revision 1, so revisions 2 and 3 become a redo branch that
+        // hangs off `current`. They must survive, or reopening a file after an
+        // undo would silently lose the ability to redo.
+        let (mut history, _state) = linear_history();
+        history.undo();
+        history.undo();
+        assert_eq!(history.current_revision(), 1);
+
+        let mut restored =
+            History::from_serialized(history.to_serialized(1).unwrap(), NO_TRIM).unwrap();
+        assert!(restored.redo().is_some());
+    }
+
+    #[test]
+    fn a_trimmed_history_round_trips_without_shrinking_again() {
+        // The trim's output must satisfy the same validation its input does,
+        // and a second pass at the same budget must be a no-op — otherwise
+        // every open would erode the history a little further.
+        let (history, _state) = linear_history();
+        let once = History::from_serialized(history.to_serialized(3).unwrap(), 16).unwrap();
+        let once_len = once.revisions.len();
+        let once_current = once.current_revision();
+
+        let twice =
+            History::from_serialized(once.to_serialized(once_current).unwrap(), 16).unwrap();
+
+        assert_eq!(twice.revisions.len(), once_len);
+        assert_eq!(twice.current_revision(), once_current);
     }
 
     #[test]
@@ -385,7 +655,7 @@ mod tests {
     fn rejects_an_empty_history() {
         let mut serialized = branching_history().0.to_serialized(0).unwrap();
         serialized.revisions.clear();
-        assert!(History::from_serialized(serialized).is_err());
+        assert!(History::from_serialized(serialized, NO_TRIM).is_err());
     }
 
     #[test]
@@ -393,7 +663,7 @@ mod tests {
         let (history, _state) = branching_history();
         let mut serialized = history.to_serialized(2).unwrap();
         serialized.current = 99;
-        assert!(History::from_serialized(serialized).is_err());
+        assert!(History::from_serialized(serialized, NO_TRIM).is_err());
     }
 
     #[test]
@@ -403,7 +673,7 @@ mod tests {
         let (history, _state) = branching_history();
         let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[1].parent = 2;
-        assert!(History::from_serialized(serialized).is_err());
+        assert!(History::from_serialized(serialized, NO_TRIM).is_err());
     }
 
     #[test]
@@ -411,7 +681,7 @@ mod tests {
         let (history, _state) = branching_history();
         let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[0].last_child = Some(99);
-        assert!(History::from_serialized(serialized).is_err());
+        assert!(History::from_serialized(serialized, NO_TRIM).is_err());
     }
 
     #[test]
@@ -422,7 +692,7 @@ mod tests {
         let (history, _state) = branching_history();
         let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[2].last_child = Some(0);
-        assert!(History::from_serialized(serialized).is_err());
+        assert!(History::from_serialized(serialized, NO_TRIM).is_err());
     }
 
     #[test]
@@ -434,7 +704,7 @@ mod tests {
         let (history, _state) = branching_history();
         let mut serialized = history.to_serialized(2).unwrap();
         serialized.revisions[1].last_child = Some(2);
-        assert!(History::from_serialized(serialized).is_err());
+        assert!(History::from_serialized(serialized, NO_TRIM).is_err());
     }
 
     #[test]
@@ -447,7 +717,7 @@ mod tests {
         let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
         json["revisions"][1]["inversion"]["selection"] = serde_json::Value::Null;
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
-        let error = History::from_serialized(serialized).unwrap_err();
+        let error = History::from_serialized(serialized, NO_TRIM).unwrap_err();
         assert!(error.to_string().contains("selection"));
     }
 
@@ -472,7 +742,7 @@ mod tests {
         json["revisions"][1]["inversion"]["changes"]["len"] = serde_json::json!(len);
         json["revisions"][1]["inversion"]["changes"]["len_after"] = serde_json::json!(len);
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
-        let error = History::from_serialized(serialized).unwrap_err();
+        let error = History::from_serialized(serialized, NO_TRIM).unwrap_err();
         assert!(error.to_string().contains("no changes"));
     }
 
@@ -490,7 +760,7 @@ mod tests {
         let other_inversion = json["revisions"][2]["inversion"].clone();
         json["revisions"][1]["inversion"] = other_inversion;
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
-        let error = History::from_serialized(serialized).unwrap_err();
+        let error = History::from_serialized(serialized, NO_TRIM).unwrap_err();
         assert!(error.to_string().contains("disagrees with its transaction"));
     }
 
@@ -503,7 +773,7 @@ mod tests {
         let mut json = serde_json::to_value(history.to_serialized(2).unwrap()).unwrap();
         json["revisions"][1]["inversion"]["changes"]["len_after"] = serde_json::json!(99);
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
-        let error = History::from_serialized(serialized).unwrap_err();
+        let error = History::from_serialized(serialized, NO_TRIM).unwrap_err();
         assert!(error.to_string().contains("disagrees with its transaction"));
     }
 
@@ -521,7 +791,7 @@ mod tests {
         json["revisions"][2]["transaction"]["changes"]["len"] = serde_json::json!(99);
         json["revisions"][2]["inversion"]["changes"]["len_after"] = serde_json::json!(99);
         let serialized: SerializedHistory = serde_json::from_value(json).unwrap();
-        let error = History::from_serialized(serialized).unwrap_err();
+        let error = History::from_serialized(serialized, NO_TRIM).unwrap_err();
         assert!(error.to_string().contains("disagrees with its parent"));
     }
 
