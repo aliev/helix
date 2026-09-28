@@ -251,15 +251,27 @@ fn trim_to_budget(serialized: &mut SerializedHistory, max_bytes: usize) {
     let current = serialized.current;
 
     // Descendants of `current` are reachable only by redo. When `current`'s own
-    // subtree overflows, shed them newest first: the highest kept index in a
-    // subtree is always a leaf, because children have larger indices than their
-    // parents.
+    // subtree overflows, shed abandoned branches first — the ones not on the
+    // redo chain — highest index first (the highest kept index in a subtree is
+    // always a leaf, because children have larger indices than their parents).
+    // Only once no abandoned descendant remains does shedding cut into the
+    // redo chain itself, furthest step first: `last_child` always names a
+    // node's most recently created child (`commit_revision_at_timestamp` in
+    // `history.rs`), so the chain from `current` always has the *highest*
+    // index among `current`'s descendants. Shedding by raw index alone would
+    // drop that reachable branch before an older, permanently abandoned one.
     let mut current_subtree = subtree[current];
     while current_subtree > max_bytes {
-        let leaf = (current + 1..len)
+        let chain = redo_chain(&serialized.revisions, &kept, current);
+        let victim = (current + 1..len)
             .rev()
-            .find(|&index| kept[index] && is_descendant_of(&serialized.revisions, index, current));
-        match leaf {
+            .find(|&index| {
+                kept[index]
+                    && is_descendant_of(&serialized.revisions, index, current)
+                    && !chain.contains(&index)
+            })
+            .or_else(|| chain.last().copied());
+        match victim {
             Some(index) => {
                 kept[index] = false;
                 current_subtree -= own[index];
@@ -340,6 +352,24 @@ fn trim_to_budget(serialized: &mut SerializedHistory, max_bytes: usize) {
 
     serialized.current = remap[current];
     serialized.revisions = revisions;
+}
+
+/// The indices reachable from `current` by pressing redo repeatedly: its
+/// `last_child`, then that revision's `last_child`, and so on, stopping at the
+/// first one no longer `kept`. `last_child` always names a node's most
+/// recently created child, so each step strictly increases the index —
+/// the chain is furthest-first when read from the end.
+fn redo_chain(revisions: &[SerializedRevision], kept: &[bool], current: usize) -> Vec<usize> {
+    let mut chain = Vec::new();
+    let mut node = current;
+    while let Some(child) = revisions[node].last_child {
+        if !kept[child] {
+            break;
+        }
+        chain.push(child);
+        node = child;
+    }
+    chain
 }
 
 /// Whether `index` is `ancestor` or sits below it in the tree.
@@ -523,6 +553,93 @@ mod tests {
         (history, state)
     }
 
+    /// The root with three children, each an 8-byte insertion from the empty
+    /// document: revisions 1 and 2 are abandoned (undone past), revision 3 is
+    /// `last_child` — the only one reachable by redo. `current` stays at the
+    /// root throughout.
+    fn root_with_abandoned_and_redo_branches() -> (History, State) {
+        let mut state = State {
+            doc: Rope::from(""),
+            selection: Selection::point(0),
+        };
+        let mut history = History::default();
+
+        for text in ["aaaaaaaa", "bbbbbbbb", "cccccccc"] {
+            commit(&mut history, &mut state, 0, 0, text);
+            let undo = history.undo().unwrap().clone();
+            undo.apply(&mut state.doc);
+        }
+        assert_eq!(history.current_revision(), 0);
+
+        (history, state)
+    }
+
+    /// `current` (revision 1) with an abandoned 8-byte child (revision 2) and
+    /// a two-step redo chain (revisions 3 and 4, 8 bytes each): redo from
+    /// `current` reaches 3, then 4.
+    fn mid_history_with_abandoned_and_deep_redo_chain() -> (History, State) {
+        let mut state = State {
+            doc: Rope::from(""),
+            selection: Selection::point(0),
+        };
+        let mut history = History::default();
+
+        // Revision 1: the eventual `current`.
+        commit(&mut history, &mut state, 0, 0, "aaaaaaaa");
+        // Revision 2: an abandoned attempt from revision 1.
+        commit(&mut history, &mut state, 8, 8, "bbbbbbbb");
+        let undo = history.undo().unwrap().clone();
+        undo.apply(&mut state.doc);
+        // Revision 3: the kept branch from revision 1.
+        commit(&mut history, &mut state, 8, 8, "cccccccc");
+        // Revision 4: one step further down the kept branch.
+        commit(&mut history, &mut state, 16, 16, "dddddddd");
+
+        history.undo();
+        history.undo();
+        assert_eq!(history.current_revision(), 1);
+
+        (history, state)
+    }
+
+    #[test]
+    fn shedding_drops_abandoned_branches_before_the_redo_chain() {
+        // At the root, budget 8 only has room for the root itself plus one
+        // 8-byte revision. Both abandoned branches (1 and 2) must go before
+        // the redo chain (3) is touched, or reopening the file would silently
+        // lose the ability to redo. Against the old highest-raw-index-first
+        // ordering, this instead drops revision 3 (the actual redo target,
+        // which always has the highest index because `last_child` always
+        // names the most recently created child) while keeping an abandoned
+        // sibling — exactly the bug in Important 1.
+        let (history, _state) = root_with_abandoned_and_redo_branches();
+        let mut restored = History::from_serialized(history.to_serialized(0).unwrap(), 8).unwrap();
+
+        assert_eq!(restored.revisions.len(), 2);
+        assert_eq!(restored.current_revision(), 0);
+
+        let redo = restored.redo().cloned().expect("redo chain must survive");
+        let mut doc = Rope::from("");
+        redo.apply(&mut doc);
+        assert_eq!(doc, Rope::from("cccccccc"));
+    }
+
+    #[test]
+    fn trimming_that_reaches_into_the_redo_chain_drops_the_deepest_step_first() {
+        // Budget 16 cannot fit the whole 32-byte subtree hanging off
+        // `current` (1 revision of 8 bytes for `current` itself, plus 8 for
+        // the abandoned branch and 16 for the two-step redo chain). The
+        // abandoned branch goes first, then the trim must cut into the redo
+        // chain itself, dropping the furthest step (4) before the nearer one
+        // (3): redo still works once, but not twice.
+        let (history, _state) = mid_history_with_abandoned_and_deep_redo_chain();
+        let mut restored = History::from_serialized(history.to_serialized(1).unwrap(), 16).unwrap();
+
+        assert_eq!(restored.revisions.len(), 2);
+        assert!(restored.redo().is_some());
+        assert!(restored.redo().is_none());
+    }
+
     #[test]
     fn a_history_within_budget_is_untouched() {
         let (history, _state) = linear_history();
@@ -536,13 +653,19 @@ mod tests {
     #[test]
     fn a_history_over_budget_keeps_the_newest_revisions() {
         let (history, _state) = linear_history();
-        // Room for roughly one revision's payload: the trim must walk up from
-        // `current` and stop early.
-        let restored = History::from_serialized(history.to_serialized(3).unwrap(), 16).unwrap();
+        // Per-revision payload bytes are 0, 4, 8, 8 and subtree totals are 20,
+        // 20, 16, 8 (see the worked example): at a 16-byte budget the walk up
+        // from `current` stops at revision 2, so exactly revisions 2 and 3
+        // survive, renumbered to 0 and 1.
+        let mut restored = History::from_serialized(history.to_serialized(3).unwrap(), 16).unwrap();
 
-        assert!(restored.revisions.len() < 4);
-        // `current` always survives, renumbered to the end of what was kept.
-        assert_eq!(restored.current_revision(), restored.revisions.len() - 1);
+        assert_eq!(restored.revisions.len(), 2);
+        assert_eq!(restored.current_revision(), 1);
+
+        // Undoing once reaches the promoted root; a second undo must refuse.
+        assert!(restored.undo().is_some());
+        assert_eq!(restored.current_revision(), 0);
+        assert!(restored.undo().is_none());
     }
 
     #[test]
