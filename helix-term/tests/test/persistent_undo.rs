@@ -13,6 +13,7 @@ fn persistent_undo_config(undo_dir: &Path) -> helix_term::config::Config {
     config.editor.persistent_undo = PersistentUndoConfig {
         enable: true,
         dir: Some(undo_dir.to_path_buf()),
+        ..PersistentUndoConfig::default()
     };
     config
 }
@@ -275,6 +276,7 @@ async fn test_disabled_persistent_undo_writes_no_undo_file() -> anyhow::Result<(
     config.editor.persistent_undo = PersistentUndoConfig {
         enable: false,
         dir: Some(undo_dir.path().to_path_buf()),
+        ..PersistentUndoConfig::default()
     };
 
     let mut app = helpers::AppBuilder::new()

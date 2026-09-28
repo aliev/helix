@@ -164,6 +164,16 @@ fn read(config: &PersistentUndoConfig, path: &Path, text: &Rope) -> Option<Histo
     // A file this large can only predate the budget or be corrupt. `serde_json`
     // materializes the whole document before the trim can run, so reading one
     // risks an out-of-memory at open; refusing is the safer failure.
+    //
+    // The threshold is measured against raw file bytes, not the payload the
+    // trim itself measures (inserted and deleted text in the kept subtree). A
+    // history of very many near-empty revisions can accumulate enough
+    // structural overhead (indices, parent pointers, per-revision JSON
+    // scaffolding) to cross this threshold while its actual payload would
+    // have fit comfortably under budget once trimmed. That history is
+    // discarded anyway: discarding is the safe failure for exactly the case
+    // this guard exists for, and it self-heals, since the next save rewrites
+    // the file from the in-memory history, bounded from then on.
     const FILE_SIZE_GUARD: u64 = 4;
     if let Ok(metadata) = fs::metadata(&undo_file_path) {
         if metadata.len() > (max_bytes as u64).saturating_mul(FILE_SIZE_GUARD) {
@@ -410,6 +420,23 @@ mod tests {
         history
     }
 
+    /// A history holding a single edit that inserts a large enough payload
+    /// for its serialized form to exceed the file-size guard's threshold at a
+    /// small budget, while still being ordinary, valid, parseable JSON.
+    fn large_history() -> History {
+        let mut state = State {
+            doc: Rope::from("hello\n"),
+            selection: Selection::point(0),
+        };
+        let mut history = History::default();
+        let big_insert = "x".repeat(8 * 1024);
+        let transaction =
+            Transaction::change(&state.doc, [(5, 5, Some(big_insert.into()))].into_iter());
+        history.commit_revision(&transaction, &state);
+        transaction.apply(&mut state.doc);
+        history
+    }
+
     #[test]
     fn writes_then_reads_a_history_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -586,9 +613,23 @@ mod tests {
         let path = Path::new("/documents/hello.txt");
         let text = Rope::from("hello world\n");
 
-        write(&config, path, &text, history().to_serialized(1).unwrap());
+        // Written through the ordinary `write` path, so the file is valid,
+        // parseable JSON that would deserialize successfully if read: only
+        // the guard can explain `read` returning `None` below, not a parse
+        // failure. `large_history` inserts enough text that the file lands
+        // comfortably past the 4 KiB threshold.
+        write(
+            &config,
+            path,
+            &text,
+            large_history().to_serialized(1).unwrap(),
+        );
         let stored = undo_file(&config, path);
-        std::fs::write(&stored, "x".repeat(5 * 1024)).unwrap();
+        let size = fs::metadata(&stored).unwrap().len();
+        assert!(
+            size > 4 * 1024,
+            "test file must exceed the 4 KiB guard to exercise it: was {size} bytes"
+        );
 
         assert!(read(&config, path, &text).is_none());
     }
