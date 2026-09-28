@@ -260,21 +260,42 @@ fn trim_to_budget(serialized: &mut SerializedHistory, max_bytes: usize) {
     // `history.rs`), so the chain from `current` always has the *highest*
     // index among `current`'s descendants. Shedding by raw index alone would
     // drop that reachable branch before an older, permanently abandoned one.
+    //
+    // The chain and its membership mask are built once, up front, rather than
+    // on every iteration: `chain.contains` rescanned the whole chain per
+    // candidate, which made a long linear redo chain (undo a long way back,
+    // then `:w`) cost O(n) candidates times O(n) `contains` per shed revision
+    // — O(n^2) for the loop as a whole. The mask turns membership into an O(1)
+    // lookup. Only the `or_else` branch below ever sheds a chain member, and
+    // it always sheds `chain`'s current last element (the deepest surviving
+    // step, per the ordering `redo_chain` documents), so the chain and its
+    // mask can be kept in sync with a plain pop instead of a full rebuild.
     let mut current_subtree = subtree[current];
+    let mut chain = redo_chain(&serialized.revisions, &kept, current);
+    let mut chain_mask = vec![false; len];
+    for &index in &chain {
+        chain_mask[index] = true;
+    }
     while current_subtree > max_bytes {
-        let chain = redo_chain(&serialized.revisions, &kept, current);
         let victim = (current + 1..len)
             .rev()
             .find(|&index| {
                 kept[index]
                     && is_descendant_of(&serialized.revisions, index, current)
-                    && !chain.contains(&index)
+                    && !chain_mask[index]
             })
             .or_else(|| chain.last().copied());
         match victim {
             Some(index) => {
                 kept[index] = false;
                 current_subtree -= own[index];
+                if chain_mask[index] {
+                    // The redo chain was cut: `index` was `chain`'s last
+                    // (deepest) element, so dropping it is enough to keep both
+                    // in sync with what a fresh `redo_chain` call would return.
+                    chain.pop();
+                    chain_mask[index] = false;
+                }
             }
             // Nothing left to shed: `current` alone exceeds the budget and is
             // kept anyway. A single large edit must not leave an empty history.
@@ -299,18 +320,36 @@ fn trim_to_budget(serialized: &mut SerializedHistory, max_bytes: usize) {
         root = parent;
     }
 
+    // The common case: a history comfortably under budget sheds nothing above
+    // and walks all the way back to the original root. Checked here, before
+    // the discard pass below runs at all, rather than after it: `root == 0`
+    // once shedding kept every revision means that pass would not change
+    // anything, and for a history of real size — tens of thousands of
+    // revisions, accumulated over a long session — it is the overwhelmingly
+    // common case. Every other pass in this function is already O(n); doing
+    // this check first, rather than last, is the difference between an O(n)
+    // open and one that quietly costs O(n^2).
+    if root == 0 && kept.iter().all(|&keep| keep) {
+        return;
+    }
+
     // Everything outside the chosen root's subtree goes, including abandoned
-    // branches that are older than it.
-    for (index, keep) in kept.iter_mut().enumerate() {
-        if !is_descendant_of(&serialized.revisions, index, root) && index != root {
-            *keep = false;
+    // branches that are older than it. This walks ascending rather than
+    // calling `is_descendant_of` per index: `parent < index` (validated
+    // above) means each index's parent has already been visited and its
+    // final membership decided, so `kept[index]` can simply be AND-ed with
+    // its parent's. A parent shed above never has a surviving kept child —
+    // shedding always removes a current leaf first — so folding this into
+    // `kept` in place, instead of computing membership into a separate
+    // vector first, never mixes up "shed" with "outside the root's subtree".
+    for index in 0..len {
+        if index < root {
+            kept[index] = false;
+        } else if index != root {
+            kept[index] = kept[index] && kept[serialized.revisions[index].parent];
         }
     }
     kept[root] = true;
-
-    if kept.iter().all(|&keep| keep) && root == 0 {
-        return;
-    }
 
     // Renumber. Old indices are ascending, so the surviving order is preserved
     // and parents still precede their children.
