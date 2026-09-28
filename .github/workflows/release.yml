@@ -364,13 +364,18 @@ jobs:
           cp helix.rb tap/Formula/helix.rb
           cd tap
 
-          if git diff --quiet -- Formula/helix.rb; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/helix.rb
+
+          # Compare the index, not the work tree: on the first release the
+          # formula is a new file, and `git diff` reports no difference for an
+          # untracked path — which would silently skip the commit and still
+          # report success.
+          if git diff --cached --quiet; then
             echo "formula already up to date for $tag"
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/helix.rb
           git commit -m "helix $tag"
           git push
