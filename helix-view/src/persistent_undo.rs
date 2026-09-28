@@ -308,6 +308,24 @@ fn restore(editor: &mut Editor, doc_id: DocumentId) {
     let Some(path) = doc.path().map(PathBuf::from) else {
         return;
     };
+
+    // A tripwire, not a condition expected to occur: everything here rests on
+    // `DocumentDidOpen` firing before `Editor::switch` calls `ensure_view_init`
+    // (`helix-view/src/document.rs`), which is the only thing that populates
+    // `doc.selections()`. That ordering lives in `editor.rs`, upstream of this
+    // fork, and nothing enforces it from this side. Renumbering revisions is
+    // only safe while nothing outside `History` holds an index into it — once
+    // a view exists, `View::doc_revisions` may already hold one, and restoring
+    // (and trimming) history out from under it would silently corrupt the next
+    // `changes_since` call. If a future merge ever moves the dispatch order,
+    // this refuses to restore instead of corrupting silently.
+    if !doc.selections().is_empty() {
+        log::warn!(
+            "not restoring undo history for '{}': a view is already attached",
+            path.display()
+        );
+        return;
+    }
     let Some(history) = read(&config, &path, doc.text()) else {
         return;
     };
@@ -395,8 +413,14 @@ pub fn register_hooks() {
 mod tests {
     use super::*;
 
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
     use helix_core::history::State;
-    use helix_core::{Selection, Transaction};
+    use helix_core::{syntax, Selection, Transaction};
+
+    use crate::editor::Config;
+    use crate::{Document, ViewId};
 
     fn config(dir: &Path) -> PersistentUndoConfig {
         PersistentUndoConfig {
@@ -671,5 +695,38 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_document_with_no_attached_view_has_no_selections() {
+        // `restore`'s tripwire guard (`!doc.selections().is_empty()`) is a
+        // defense against a future upstream reordering that would dispatch
+        // `DocumentDidOpen` after `Editor::switch` calls `ensure_view_init`.
+        // Exercising the guard through `restore` itself would need a full
+        // `Editor` — theme loader, syntax loader, handlers, workspace trust —
+        // none of which helix-view builds for a unit test; only
+        // `helix-term`'s integration harness does. This instead pins down the
+        // exact mechanism the guard relies on: a freshly built `Document` has
+        // no selections, `ensure_view_init` (what `Editor::switch` calls when
+        // it attaches a view) is what populates one, and the guard's
+        // condition is true only after that has happened.
+        let mut doc = Document::from(
+            Rope::from("hello\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        assert!(
+            doc.selections().is_empty(),
+            "a document with no attached view must have no selections, or the guard in \
+             `restore` would refuse to restore even the ordinary case"
+        );
+
+        doc.ensure_view_init(ViewId::default());
+        assert!(
+            !doc.selections().is_empty(),
+            "ensure_view_init must populate a selection, or the guard in `restore` could never \
+             detect an attached view"
+        );
     }
 }
