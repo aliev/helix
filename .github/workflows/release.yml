@@ -174,11 +174,17 @@ jobs:
           mv "$APP-$VERSION-$ARCH.AppImage" \
               "$APP-$VERSION-$ARCH.AppImage.zsync" dist
 
+      # Fork change: build cargo-deb from source rather than taking the prebuilt
+      # binary `taiki-e/install-action` provides. The runner is pinned to
+      # ubuntu-22.04 (glibc 2.35) on purpose, for the portability of the archives
+      # this job produces, and current cargo-deb releases are linked against
+      # glibc 2.39 — the prebuilt binary aborts with
+      # `version GLIBC_2.39 not found` before it can run. Compiling here links
+      # against whatever the runner has, so this cannot drift again.
       - name: Install cargo-deb
+        shell: bash
         if: matrix.build == 'x86_64-linux'
-        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-deb
+        run: cargo install cargo-deb --locked
 
       - name: Build Deb
         shell: bash
